@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+
+$LOAD_PATH.unshift("#{__dir__}/../lib")
+
+require 'optparse'
+require 'codenet_bugs'
+require 'codenet_bugs/evaluator'
+
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: evaluate [options]"
+
+  opts.on('--checkpoint PATH', "Continue evaluating from checkpoint (e.g., in case of a crash)") do |checkpoint|
+    options[:checkpoint] = checkpoint
+  end
+end.parse!
+
+*submission_filenames, tests_filename, preds_filename = ARGV
+
+p [submission_filenames, tests_filename, preds_filename]
+bugs = CodenetBugs::Evaluator::Bugs.load submission_filenames, preds_filename
+tests = CodenetBugs::Evaluator::Tests.load tests_filename
+
+bugs.evaluate! tests, checkpoint: options[:checkpoint]
+

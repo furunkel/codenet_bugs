@@ -1,0 +1,79 @@
+#!/usr/bin/env ruby
+
+$LOAD_PATH.unshift("#{__dir__}/../lib")
+
+require 'optparse'
+require 'json'
+require 'pp'
+require 'diffy'
+
+require 'codenet_bugs/evaluator'
+
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: evaluate [options]"
+
+  # opts.on('--checkpoint PATH', "Continue evaluating from checkpoint (e.g., in case of a crash)") do |checkpoint|
+  #   options[:checkpoint] = checkpoint
+  # end
+end.parse!
+
+
+
+*submission_filenames, preds_filename, runs_filename = ARGV
+
+runs = JSON.load_file runs_filename
+bugs = CodenetBugs::Evaluator::Bugs.load submission_filenames, preds_filename
+
+by_lang =  bugs.group_by{ _1.language }.transform_values { _1.size }
+p by_lang
+
+valid_bugs = runs.select { |_bug_id, pred_runs|  pred_runs.any?{|pr| pr.all?{ _1['result'] == 'pass' } } }
+
+
+p ['size', valid_bugs.size]
+
+valid_by_lang = valid_bugs.group_by{ bugs[_1.first].language }.transform_values { _1.size }.merge(by_lang) { |key, old, new| old / new.to_f }
+p valid_by_lang
+
+count = valid_bugs.count do |bug_id, pred_runs|
+  bug = bugs[bug_id]
+  passing_pred = pred_runs.index { |pr| pr.all?{ _1['result'] == 'pass' }}
+  candidate_submission = bug.candidate_submissions[passing_pred]
+  candidate_submission.content == bug.target_submission.content
+end
+p ['count', count]
+
+all_labels = bugs.flat_map { _1.labels }.tally
+valid_labels = valid_bugs.flat_map { bugs[_1.first].labels }.tally
+label_ratio = all_labels.each_with_object({}) {|(k, v), h| h[k] = [(n = valid_labels.fetch(k, 0)) / v.to_f, "#{n}/#{v}"] }.sort_by{_2.first}.to_h
+pp label_ratio
+
+exit
+
+valid_bugs.each do |bug_id, pred_runs|
+  bug = bugs[bug_id]
+  passing_pred = pred_runs.index { |pr| pr.all?{ _1['result'] == 'pass' }}
+  p passing_pred
+  candidate_submission = bug.candidate_submissions[passing_pred]
+
+  if candidate_submission.content != bug.target_submission.content
+    puts bug.diff(:source, passing_pred)
+    puts "----"
+    puts bug.diff(:source, :target)
+    puts "----"
+    puts bug.diff(:target, passing_pred)
+    puts "#######"
+    p candidate_submission.content
+    p bug.target_submission.content
+    puts "\n\n\n\n\n"
+  end
+  sleep 1
+end
+
+
+
+#bugs = CodenetBugs::Evaluator::Bugs.load submission_filenames, preds_filename
+#tests = CodenetBugs::Evaluator::Tests.load tests_filename
+#bugs.evaluate! tests, checkpoint: options[:checkpoint]
+

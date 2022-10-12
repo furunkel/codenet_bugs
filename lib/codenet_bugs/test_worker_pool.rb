@@ -1,0 +1,147 @@
+require 'open3'
+require 'stringio'
+require 'io/wait'
+require 'json'
+
+require 'codenet_bugs/bug'
+require 'codenet_bugs/test'
+require 'codenet_bugs/test_worker'
+
+module CodenetBugs
+
+  class TestWorkerPool
+    SANDBOX_HOME = '/home/sandbox'
+
+    class Connection
+      attr_reader :id, :pid, :read_io, :write_io
+
+      def initialize(id, pid, read_io, write_io, logger)
+        @id = id
+        @pid = pid
+        @read_io = read_io
+        @write_io = write_io
+        @logger = logger
+        @mutex = Mutex.new
+      end
+
+      def idle?
+        !@mutex.locked?
+      end
+
+      def submit(str)
+        @mutex.synchronize do
+          @logger.debug("Sumitting '#{str}'")
+          @logger.debug("Writing '#{TestWorker::HEADER}'")
+          @write_io.write(TestWorker::HEADER)
+          @logger.debug("Writing '#{str.bytesize}'")
+          @write_io.write([str.bytesize].pack('q'))
+          @write_io.write(str)
+          @write_io.flush
+
+          recv_header = @read_io.read(TestWorker::HEADER.bytesize)
+          @logger.debug("Reading '#{recv_header}'")
+          raise "expected header but got #{recv_header}" if recv_header != TestWorker::HEADER
+          size = @read_io.read(8).unpack1('q')
+          @logger.debug("Reading '#{size}'")
+          result = @read_io.read(size)
+          @logger.debug("Reading '#{result}'")
+          result
+        end
+      end
+    end
+
+    def initialize(logger, size:)
+      @logger = logger
+      @connections = size.times.map do |worker_index|
+        child_read, parent_write = IO.pipe
+        parent_read, child_write = IO.pipe
+
+        child_read.binmode
+        parent_write.binmode
+        parent_read.binmode
+        child_write.binmode
+
+        pid = spawn_worker(worker_index, child_read, child_write)
+
+        Connection.new(worker_index, pid, parent_read, parent_write, @logger)
+      end
+
+      @write_ios = @connections.map { _1.write_io }
+    end
+
+    def submit(submission, io_samples, **options)
+      loop do
+        _, writable_ios, = IO.select(nil, @write_ios, nil)
+
+        p @write_ios
+        #writable_io = writable_ios.first #sampl
+
+        connection = find_idle_connection(writable_ios)
+        if connection.nil?
+          @logger.debug("no idle connection found...")
+          sleep 0.3
+        else
+          @logger.debug("submitting to worker #{connection.id}")
+          result_str = connection.submit(JSON.generate([submission.to_h, io_samples.map(&:to_h), options.to_h]))
+          result = JSON.parse(result_str)
+          @logger.debug("submission to #{connection.id} returned")
+          return result
+        end
+      end
+    end
+
+    private
+    def find_idle_connection(write_ios)
+      @connections.find { _1.idle? && write_ios.include?(_1.write_io) }
+    end
+
+    def to_sandbox_path(path)
+      path.sub(Dir.home, SANDBOX_HOME)
+    end
+
+    def run_worker_code(id)
+      <<~RUBY
+        require 'codenet_bugs/test_worker'
+        CodenetBugs::TestWorker.new(id: #{id}, read_fd: 3, write_fd: 4).run!
+      RUBY
+    end
+
+    def spawn_worker(id, child_read, child_write)
+      ruby_bindir = RbConfig::CONFIG['bindir']
+      ruby_path = RbConfig::CONFIG.values_at('bindir', 'libexecdir').join(':')
+      ruby_prefix = RbConfig::CONFIG['prefix']
+      rubylib = ($LOAD_PATH + [File.join(CodenetBugs.root, 'lib')]).map { to_sandbox_path(_1) }.join(':')
+
+      p ruby_path
+      p [ruby_prefix, to_sandbox_path(ruby_prefix)]
+      p [rubylib]
+
+      cmd = [
+        'bwrap',
+        '--ro-bind', '/usr', '/usr',
+        '--ro-bind', '/etc/alternatives/java', '/etc/alternatives/java',
+        '--ro-bind', '/etc/alternatives/javac', '/etc/alternatives/javac',
+        '--ro-bind', ruby_prefix, to_sandbox_path(ruby_prefix),
+        '--ro-bind', CodenetBugs.root, to_sandbox_path(CodenetBugs.root),
+        '--dir', '/tmp',
+        '--dir', '/var',
+        '--symlink', '../tmp', 'var/tmp',
+        '--proc', '/proc',
+        '--dev', '/dev',
+        '--symlink', 'usr/lib', '/lib',
+        '--symlink', 'usr/lib64', '/lib64',
+        '--symlink', 'usr/bin', '/bin',
+        '--symlink', 'usr/sbin', '/sbin',
+        '--chdir', '/tmp',
+        '--unshare-all',
+        '--new-session',
+        '--die-with-parent',
+        '--clearenv',
+        '--setenv', 'RUBYLIB', rubylib,
+        '--setenv', 'LD_LIBRARY_PATH', to_sandbox_path(RbConfig::CONFIG['libdir']),
+        '--setenv', 'PATH', "#{ruby_path}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ]
+      spawn(*cmd, File.join(to_sandbox_path(ruby_bindir), 'ruby'), '-e', run_worker_code(id), 3=>child_read, 4=>child_write, close_others: true)
+    end
+  end
+end
