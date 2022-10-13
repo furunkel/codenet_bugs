@@ -10,7 +10,7 @@ require 'codenet_bugs/test_worker'
 module CodenetBugs
 
   class TestWorkerPool
-    SANDBOX_HOME = '/home/sandbox'
+    SANDBOX_HOME = '/home/sandbox'.freeze
 
     class Connection
       attr_reader :id, :pid, :read_io, :write_io
@@ -30,6 +30,7 @@ module CodenetBugs
 
       def submit(str)
         @mutex.synchronize do
+          s = Time.now
           @logger.debug("Sumitting '#{str}'")
           @logger.debug("Writing '#{TestWorker::HEADER}'")
           @write_io.write(TestWorker::HEADER)
@@ -45,13 +46,20 @@ module CodenetBugs
           @logger.debug("Reading '#{size}'")
           result = @read_io.read(size)
           @logger.debug("Reading '#{result}'")
+          @logger.debug("Submit took #{Time.now - s} seconds")
           result
         end
+      end
+
+      def shutdown
+        @read_io.close
+        @write_io.close
       end
     end
 
     def initialize(logger, size:)
       @logger = logger
+      @queue = Queue.new
       @connections = size.times.map do |worker_index|
         child_read, parent_write = IO.pipe
         parent_read, child_write = IO.pipe
@@ -62,38 +70,45 @@ module CodenetBugs
         child_write.binmode
 
         pid = spawn_worker(worker_index, child_read, child_write)
-
-        Connection.new(worker_index, pid, parent_read, parent_write, @logger)
+        connection = Connection.new(worker_index, pid, parent_read, parent_write, @logger)
+        @queue.enq connection
+        connection
       end
 
-      @write_ios = @connections.map { _1.write_io }
+      # @write_ios = @queue.map { _1.write_io }
     end
 
     def submit(submission, io_samples, **options)
-      loop do
-        _, writable_ios, = IO.select(nil, @write_ios, nil)
+      connection = @queue.deq
+      result_str = connection.submit(JSON.generate([submission.to_h, io_samples.map(&:to_h), options.to_h]))
+      result = JSON.parse(result_str)
+      @queue.enq connection
+      result
 
-        p @write_ios
-        #writable_io = writable_ios.first #sampl
+      # loop do
+      #   _, writable_ios, = IO.select(nil, @write_ios, nil)
 
-        connection = find_idle_connection(writable_ios)
-        if connection.nil?
-          @logger.debug("no idle connection found...")
-          sleep 0.3
-        else
-          @logger.debug("submitting to worker #{connection.id}")
-          result_str = connection.submit(JSON.generate([submission.to_h, io_samples.map(&:to_h), options.to_h]))
-          result = JSON.parse(result_str)
-          @logger.debug("submission to #{connection.id} returned")
-          return result
-        end
-      end
+      #   p @write_ios
+      #   #writable_io = writable_ios.first #sampl
+
+      #   connection = find_idle_connection(writable_ios)
+      #   if connection.nil?
+      #     @logger.debug("no idle connection found...")
+      #   else
+      #     @logger.debug("submitting to worker #{connection.id}")
+      #     result_str = connection.submit(JSON.generate([submission.to_h, io_samples.map(&:to_h), options.to_h]))
+      #     result = JSON.parse(result_str)
+      #     @logger.debug("submission to #{connection.id} returned")
+      #     return result
+      #   end
+      # end
+    end
+
+    def shutdown
+      @connections.each(&:shutdown)
     end
 
     private
-    def find_idle_connection(write_ios)
-      @connections.find { _1.idle? && write_ios.include?(_1.write_io) }
-    end
 
     def to_sandbox_path(path)
       path.sub(Dir.home, SANDBOX_HOME)
@@ -119,8 +134,7 @@ module CodenetBugs
       cmd = [
         'bwrap',
         '--ro-bind', '/usr', '/usr',
-        '--ro-bind', '/etc/alternatives/java', '/etc/alternatives/java',
-        '--ro-bind', '/etc/alternatives/javac', '/etc/alternatives/javac',
+        '--ro-bind', '/etc/alternatives', '/etc/alternatives',
         '--ro-bind', ruby_prefix, to_sandbox_path(ruby_prefix),
         '--ro-bind', CodenetBugs.root, to_sandbox_path(CodenetBugs.root),
         '--dir', '/tmp',

@@ -14,12 +14,13 @@ module CodenetBugs
 
     HEADER = "BUGS".freeze
 
-    def initialize(id:, read_fd:, write_fd:)
+    def initialize(id:, read_fd:, write_fd:, logger_level: Logger::WARN)
       @id = id
       @read_io = IO.for_fd read_fd
       @write_io = IO.for_fd write_fd
 
       @logger = Logger.new $stdout
+      @logger.level = logger_level
       @logger.formatter = proc do |severity, datetime, _progname, msg|
         date_format = datetime.strftime("%Y-%m-%d %H:%M:%S")
         sprintf "[Worker#%d] [%s] %-5s: %s\n", id, date_format, severity, msg
@@ -32,7 +33,11 @@ module CodenetBugs
       loop do
         @read_io.wait_readable
         header = @read_io.read(HEADER.bytesize)
-        raise "expected header but got #{header}" if header != TestWorker::HEADER
+
+        # EOF
+        break if header.nil?
+
+        raise "expected header but got #{header.inspect}" if header != TestWorker::HEADER
 
         size = @read_io.read(8).unpack1('q')
         @logger.debug("Read size: #{size}")
@@ -46,8 +51,10 @@ module CodenetBugs
 
         @logger.debug("Running submisison #{submission} on #{io_samples.map(&:id)}")
 
+        s = Time.now
         runner = TestRunner2.new(submission, io_samples, logger: @logger, **options)
         results = runner.run!
+        @logger.debug("running took #{Time.now - s} seconds")
 
         result_json = results.to_json
         @write_io.write(HEADER)

@@ -18,7 +18,7 @@ module CodenetBugs
       @id = id
       @content = content
       @problem_id = problem_id
-      @language = language
+      @language = language.to_sym
       @main_class = main_class
       @accepted = accepted
     end

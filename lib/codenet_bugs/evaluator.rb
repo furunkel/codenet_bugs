@@ -84,9 +84,10 @@ module CodenetBugs
 
       def each(...) = @bugs.each_value(...)
 
-      def initialize(bugs)
+      def initialize(bugs, logger_level: Logger::INFO)
         @bugs = bugs
         @logger = Logger.new
+        @logger.level = logger_level
       end
 
       def restart!(checkpoint)
@@ -110,11 +111,11 @@ module CodenetBugs
           bugs = @bugs
         end
 
-        test_worker_pool = TestWorkerPool.new @logger, size: 1
+        test_worker_pool = TestWorkerPool.new @logger, size: 8
         eval_rows = Concurrent::Hash.new
-        pool = ThreadPool.new size: 10
+        pool = ThreadPool.new size: 8
 
-        bugs.take(1).cycle.each_with_index do |(bug_id, bug), bug_index|
+        bugs.each_with_index do |(bug_id, bug), bug_index|
           pool.post do
             io_samples = tests[bug.problem_id]
             @logger.progress = (all_rows.size + bug_index.to_f + 0.5) / @bugs.size
@@ -124,13 +125,13 @@ module CodenetBugs
             begin
 
               if predictions
-                rows = bug.candidate_submissions.take(1).cycle.inject([]) do |acc, candidate_submission|
-                  results = test_worker_pool.submit(candidate_submission, io_samples, 
+                rows = bug.candidate_submissions.inject([]) do |acc, candidate_submission|
+                  runs = test_worker_pool.submit(candidate_submission, io_samples, 
                                                     abort_on_timeout: abort_on_timeout,
                                                     abort_on_error: abort_on_error,
                                                     abort_on_fail: abort_on_fail)
-                  acc << results
-                  break acc if results.all? { _1[:result] == :pass }
+                  acc << runs
+                  break acc if runs.all? { _1.fetch('result') == 'pass' }
                   acc
                 end
               else
@@ -139,6 +140,9 @@ module CodenetBugs
               #rows = IOSampleRunner.new(bug.source_submission, io_samples, abort_on_timeout: abort_on_timeout).run!
               #rows2 = IOSampleRunner.new(bug.target_submission, io_samples, abort_on_timeout: abort_on_timeout).run!
               eval_rows[bug.id] = rows if rows
+              max_run = rows.max_by { |runs| runs.count { _1.fetch('result') == 'pass' }}
+              passed = max_run.all? { _1.fetch('result') == 'pass' }
+              @logger.info("Bug #{bug.id} (#{bug.language}): #{passed} #{max_run ? max_run.size : 0}/#{io_samples.size}")
             rescue TestRunner::BWrapError => e
               @logger.error e
               restart = true
@@ -148,6 +152,7 @@ module CodenetBugs
         end
 
         pool.start!
+        test_worker_pool.shutdown
 
         all_rows.merge! eval_rows
 
@@ -198,6 +203,7 @@ module CodenetBugs
                 problem_id:,
                 user_id: hash.fetch('user_id').to_sym,
                 labels: hash.fetch('labels'),
+                change_count: hash.fetch('change_count'),
                 source_submission:,
                 target_submission:
               )

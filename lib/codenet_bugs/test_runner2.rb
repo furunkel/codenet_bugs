@@ -4,6 +4,7 @@ require 'logger'
 require 'io/wait'
 require 'strscan'
 require 'tmpdir'
+require 'tempfile'
 
 module CodenetBugs
   class TestRunner2
@@ -212,11 +213,11 @@ module CodenetBugs
       output.length > max_size ? "#{output[0...max_size]}<truncated>" : output
     end
 
-    def run_compiler(cmd, input_filename, input, *args)
+    def run_compiler(cmd, input_filename, input, *args, env: {})
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) do
           File.write(File.join(dir, input_filename), input)
-          output, status = Open3.capture2e(*cmd, input_filename, *args, chdir: dir)
+          output, status = Open3.capture2e(env, *cmd, input_filename, *args, chdir: dir)
           if status.exitstatus.zero?
             yield dir
           else
@@ -238,29 +239,30 @@ module CodenetBugs
 
       run_compiler('javac', "#{class_name}.java", content) do |tmp_dir|
         class_filenames = Dir[File.join(tmp_dir, '*.class')]
-        sandbox_filenames = class_filenames.map { File.join('/tmp', File.basename(_1)) }
-        block[class_filenames.zip(sandbox_filenames), { class_name: class_name }]
+        # sandbox_filenames = class_filenames.map { File.join('/tmp', File.basename(_1)) }
+        block[class_filenames, { class_name: class_name }]
       end
     end
 
     def compile_c(cc, ext, &block)
-      run_compiler(cc, "program.#{ext}", @submission.content, '-lm') do |tmp_dir|
-        block[[[File.join(tmp_dir, 'a.out'), '/tmp/a.out']], {}]
+      run_compiler(cc, "file.#{ext}", @submission.content, '-lm') do |tmp_dir|
+        block[File.join(tmp_dir, 'a.out'), {}]
       end
     end
 
     def compile_go(&block)
-      run_compiler(['go', 'build', '-o', 'a.out'], 'program.go', @submission.content) do |tmp_dir|
-        block[[[File.join(tmp_dir, 'a.out'), '/tmp/a.out']], {}]
+      run_compiler(['go', 'build', '-o', 'a.out'], 'file.go', @submission.content, env: {'GOCACHE' => '/tmp/'} ) do |tmp_dir|
+        block[File.join(tmp_dir, 'a.out'), {}]
       end
     end
 
     def dummy_compile(&block)
-      Tempfile.create(['program', @submission.filename_ext]) do |tmp_file|
-        tmp_file.write(@submission.content)
-        tmp_file.flush
-        tmp_file.rewind
-        block[[[tmp_file, "/tmp/file.#{@submission.filename_ext}"]], {}]
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          file_path = File.join(dir, "file.#{@submission.filename_ext}")
+          File.write(file_path, @submission.content)
+          block[file_path, {}]
+        end
       end
     end
 
@@ -279,48 +281,40 @@ module CodenetBugs
       end
     end
 
-    def cmd(context)
-      cmd = [
-      ]
-
+    def cmd(filename, context)
       case @submission_language
       when :ruby
-        cmd << '/usr/bin/ruby' << '--disable-gems' << filename
+        ['/usr/bin/ruby', '--disable-gems', filename]
       when :python
-        cmd << '/usr/bin/python3' << filename
+        ['/usr/bin/python3', filename]
       when :php
-        cmd << '/usr/bin/php7.4' << filename
+        ['/usr/bin/php7.4', filename]
       when :javascript
-        cmd << '/usr/bin/node' << '--max-old-space-size=512' << filename
+        ['/usr/bin/node', '--max-old-space-size=512', filename]
       when :c, :cpp, :go
-        cmd << './a.out'
-      # when 'go'
-        # cmd << '--setenv' << 'GOPATH' << '/tmp'
-        # cmd << '--setenv' << 'GOCACHE' << '/tmp'
-        # cmd << '/usr/bin/go' << 'run' << filename
+        ['./a.out']
       when :java
-        cmd << '/usr/bin/java' << '-mx512m' << '-XX:TieredStopAtLevel=1' << context.fetch(:class_name)
+        ['/usr/bin/java', '-mx512m', '-XX:TieredStopAtLevel=1', context.fetch(:class_name)]
         # cmd << '/usr/lib/jvm/java-17-openjdk-amd64/bin/java' <<
       else
         raise "language #{@submission_language} is not supported"
       end
-      cmd
     end
 
     def abort?(result_type, abort_count, result1, result2=result1)
       if result_type == result1 || result_type == result2 && abort_count
         @counters[result1] += 1
         if abort_count == true || @counters[result1] >= abort_count
-          @logger.warn "#{@counters[result1]} #{result1}s...aborting"
+          @logger.debug "#{@counters[result1]} #{result1}s...aborting"
           return true
         end
       end
       false
     end
 
-    def run_all_samples(file_mappings, context)
+    def run_all_samples(filename, context)
       @io_samples.each_with_object([]) do |io_sample, results|
-        result = run_sample(context, io_sample)
+        result = run_sample(filename, context, io_sample)
         if result
           result_type = result[:result]
           results << result
@@ -366,8 +360,18 @@ module CodenetBugs
         err_reader = Thread.new do
           read_with_timeout e, timeout
         end
-        i.write stdin_data
-        i.close
+
+        begin
+          i.write stdin_data
+        rescue Errno::EPIPE
+          @logger.warn('Writing to STDIN failed: EPIPE')
+        end
+
+        begin
+          i.close
+        rescue Errno::EPIPE
+          @logger.warn('Closing STDIN failed: EPIPE')
+        end
 
         out_value = out_reader.value
         err_value = err_reader.value
@@ -383,7 +387,7 @@ module CodenetBugs
       }
     end
 
-    def run_sample(context, io_sample)
+    def run_sample(filename, context, io_sample)
       sample_input = io_sample.input
       sample_output = io_sample.output.strip
 
@@ -394,10 +398,10 @@ module CodenetBugs
       env = {
         'OPENBLAS_NUM_THREADS' => '1',
         'GOTO_NUM_THREADS' => '1',
-        'OMP_NUM_THREADS' => '1'
+        'OMP_NUM_THREADS' => '1',
       }
 
-      cmd = cmd(context)
+      cmd = cmd(filename, context)
 
       result = nil
 
@@ -455,7 +459,7 @@ module CodenetBugs
 
       if (@submission.accepted? && result != :pass) ||
           (!@submission.accepted? && result == :pass)
-        @logger.warn("Run result does not match submission status: #{@submission.id} #{icon}")
+        @logger.debug("Run result does not match submission status: #{@submission.id} #{icon}")
       end
 
       {
@@ -470,17 +474,16 @@ module CodenetBugs
     def compile_and_run
       attributes =
         begin
-          compile do |file_mappings, context|
+          compile do |filename, context|
             @logger.debug "Compiling submission #{@submission.id} done"
             begin
-              run_all_samples(file_mappings, context)
+              run_all_samples(filename, context)
             # rescue Errno::EPIPE, IOError => e
             #   @logger.warn "Received EPIPE/IOError, repeating execution (#{e})"
             #   retry
             end
           end
         rescue CompilationError => e
-          @logger.warn("Submission #{@submission.id} failed to compile (#{e.message})")
           [{
             result: :compilation_error,
             submission_id: @submission.id,
