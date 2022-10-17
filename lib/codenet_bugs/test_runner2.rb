@@ -188,7 +188,7 @@ module CodenetBugs
       if logger
         @logger = logger
       else
-        @logger = defined?(Rails) ? Rails.logger : Logger.new($stdout)
+        @logger = defined?(Rails) ? Rails.logger : ::Logger.new($stdout)
         @logger.level = logger_level
       end
     end
@@ -217,7 +217,7 @@ module CodenetBugs
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) do
           File.write(File.join(dir, input_filename), input)
-          output, status = Open3.capture2e(env, *cmd, input_filename, *args, chdir: dir)
+          output, status = Open3.capture2e(env.merge('LANG' => 'en_US.UTF-8'), *cmd, input_filename, *args, chdir: dir)
           if status.exitstatus.zero?
             yield dir
           else
@@ -237,7 +237,7 @@ module CodenetBugs
       # class_name ||= find_java_main_class(@submission)
       raise CompilationError, 'missing main class' if class_name.nil?
 
-      run_compiler('javac', "#{class_name}.java", content) do |tmp_dir|
+      run_compiler(['javac', '-encoding', 'UTF-8'], "#{class_name}.java", content) do |tmp_dir|
         class_filenames = Dir[File.join(tmp_dir, '*.class')]
         # sandbox_filenames = class_filenames.map { File.join('/tmp', File.basename(_1)) }
         block[class_filenames, { class_name: class_name }]
@@ -302,10 +302,10 @@ module CodenetBugs
     end
 
     def abort?(result_type, abort_count, result1, result2=result1)
-      if result_type == result1 || result_type == result2 && abort_count
+      if abort_count && (result_type == result1 || result_type == result2)
         @counters[result1] += 1
-        if abort_count == true || @counters[result1] >= abort_count
-          @logger.debug "#{@counters[result1]} #{result1}s...aborting"
+        if abort_count == true || @counters.fetch(result1) >= abort_count
+          @logger.debug "#{@counters.fetch(result1)} #{result1}s...aborting"
           return true
         end
       end
@@ -316,7 +316,7 @@ module CodenetBugs
       @io_samples.each_with_object([]) do |io_sample, results|
         result = run_sample(filename, context, io_sample)
         if result
-          result_type = result[:result]
+          result_type = result.fetch(:result)
           results << result
 
           return results if abort?(result_type, @abort_on_timeout, :timeout, :timeout2) ||
@@ -363,6 +363,8 @@ module CodenetBugs
 
         begin
           i.write stdin_data
+          # some inputs lack final newline
+          i.write "\n" unless stdin_data.end_with?("\n")
         rescue Errno::EPIPE
           @logger.warn('Writing to STDIN failed: EPIPE')
         end
@@ -399,6 +401,7 @@ module CodenetBugs
         'OPENBLAS_NUM_THREADS' => '1',
         'GOTO_NUM_THREADS' => '1',
         'OMP_NUM_THREADS' => '1',
+        'LANG' => 'en_US.UTF-8',
       }
 
       cmd = cmd(filename, context)

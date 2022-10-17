@@ -4,7 +4,8 @@ $LOAD_PATH.unshift("#{__dir__}/../lib")
 
 require 'optparse'
 require 'codenet_bugs'
-require 'codenet_bugs/evaluator'
+require 'codenet_bugs/bugs'
+require 'codenet_bugs/tests'
 
 options = {}
 OptionParser.new do |opts|
@@ -15,11 +16,10 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-*submission_filenames, tests_filename, preds_filename = ARGV
+preds_filename = ARGV.first
 
-p [submission_filenames, tests_filename, preds_filename]
-bugs = CodenetBugs::Evaluator::Bugs.load submission_filenames, preds_filename
-tests = CodenetBugs::Evaluator::Tests.load tests_filename
+bugs = CodenetBugs::Bugs.load_internal preds_filename
+tests = CodenetBugs::Tests.load_internal
 
 bugs.evaluate! tests, checkpoint: options[:checkpoint]
 

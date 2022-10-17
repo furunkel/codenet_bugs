@@ -9,7 +9,7 @@ module CodenetBugs
     end
 
     def self.from_hash(hash)
-      new(**hash.transform_keys(&:to_sym))
+      new(**hash)
     end
 
     def to_h

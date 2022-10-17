@@ -25,18 +25,33 @@ end.parse!
 runs = JSON.load_file runs_filename
 bugs = CodenetBugs::Evaluator::Bugs.load submission_filenames, preds_filename
 
+puts bugs['58443'].target_submission.content
+pp runs['58443']
+exit
+
 by_lang =  bugs.group_by{ _1.language }.transform_values { _1.size }
 by_change_count =  bugs.group_by{ _1.change_count }.transform_values { _1.size }
 p by_lang
 
-valid_bugs = runs.select { |_bug_id, pred_runs|  pred_runs.any?{|pr| pr.all?{ _1['result'] == 'pass' } } }
+valid_bugs, failing_bugs = runs.partition { |_bug_id, pred_runs|  pred_runs.any?{|pr| pr.all?{ _1['result'] == 'pass' } } }
 # pp valid_bugs.map { |bug_id, pred_runs| [bug_id.to_i, pred_runs.find{|pr| pr.all?{ _1['result'] == 'pass'}}&.size]}.sort_by{_1}
 
-pp runs["1"]
+#File.write("/tmp/ids_#{File.basename(runs_filename)}.txt", valid_bugs.keys.sort.join("\n"))
+
+# a = File.readlines('/tmp/ids_codenet_bugs_checkpoint_1665059901.json.txt', chomp: true)
+# b = File.readlines('/tmp/ids_codenet_bugs_checkpoint_1665859597.json.txt', chomp: true)
+
+# (a - b).each do |id|
+#   pp runs[id]
+#   puts "======================================="
+# end
+# exit
+
 p ['valid rate', valid_bugs.size/runs.size.to_f]
 p ['runs', runs.size]
 p ['size', valid_bugs.size]
-
+puts failing_bugs.map{_1.first }.sort.join("\n")
+exit
 valid_by_lang = valid_bugs.group_by{ bugs[_1.first].language }.transform_values { _1.size }.merge(by_lang) { |key, old, new| old / new.to_f }
 valid_by_change_count = valid_bugs.group_by{ bugs[_1.first].change_count }.transform_values { _1.size }.merge(by_change_count) { |key, old, new| old / new.to_f }
 p valid_by_lang

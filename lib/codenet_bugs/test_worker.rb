@@ -19,7 +19,7 @@ module CodenetBugs
       @read_io = IO.for_fd read_fd
       @write_io = IO.for_fd write_fd
 
-      @logger = Logger.new $stdout
+      @logger = ::Logger.new $stdout
       @logger.level = logger_level
       @logger.formatter = proc do |severity, datetime, _progname, msg|
         date_format = datetime.strftime("%Y-%m-%d %H:%M:%S")
@@ -42,12 +42,12 @@ module CodenetBugs
         size = @read_io.read(8).unpack1('q')
         @logger.debug("Read size: #{size}")
         input_str = @read_io.read(size)
-        input = JSON.parse(input_str)
+        input = JSON.parse(input_str, symbolize_names: true)
         @logger.debug("Read: #{input.inspect}")
 
         submission = Submission.from_hash(input[0])
         io_samples = input[1].map { Test.from_hash _1 }
-        options = input[2].transform_keys(&:to_sym)
+        options = input[2] #.transform_keys(&:to_sym)
 
         @logger.debug("Running submisison #{submission} on #{io_samples.map(&:id)}")
 

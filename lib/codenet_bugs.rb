@@ -9,7 +9,8 @@ module CodenetBugs
   def self.root
     File.expand_path('..', __dir__)
   end
-end
 
-require_relative "codenet_bugs/evaluator"
-require_relative "codenet_bugs/test_runner"
+  def self.data_dir
+    File.join(root, 'data')
+  end
+end

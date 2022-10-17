@@ -13,6 +13,7 @@ module CodenetBugs
     }.freeze
 
     attr_reader :id, :content, :problem_id, :language, :main_class, :accepted
+    attr_writer :content
 
     def initialize(id:, content:, problem_id:, language:, main_class:, accepted:)
       @id = id
@@ -24,7 +25,7 @@ module CodenetBugs
     end
 
     def self.from_hash(hash)
-      new(**hash.transform_keys(&:to_sym))
+      new(**hash)
     end
 
     def to_h

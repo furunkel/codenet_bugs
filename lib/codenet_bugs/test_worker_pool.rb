@@ -57,8 +57,8 @@ module CodenetBugs
       end
     end
 
-    def initialize(logger, size:)
-      @logger = logger
+    def initialize(size:, logger: nil)
+      @logger = logger || ::Logger.new($stdout)
       @queue = Queue.new
       @connections = size.times.map do |worker_index|
         child_read, parent_write = IO.pipe
@@ -81,7 +81,7 @@ module CodenetBugs
     def submit(submission, io_samples, **options)
       connection = @queue.deq
       result_str = connection.submit(JSON.generate([submission.to_h, io_samples.map(&:to_h), options.to_h]))
-      result = JSON.parse(result_str)
+      result = JSON.parse(result_str, symbolize_names: true)
       @queue.enq connection
       result
 
@@ -103,6 +103,10 @@ module CodenetBugs
       #   end
       # end
     end
+
+
+
+
 
     def shutdown
       @connections.each(&:shutdown)
