@@ -83,8 +83,7 @@ module CodenetBugs
       result_str = connection.submit(JSON.generate([submission.to_h, io_samples.map(&:to_h), options.to_h]))
       result = JSON.parse(result_str, symbolize_names: true)
       @queue.enq connection
-      result
-
+      [result, { worker_id: connection.id }]
       # loop do
       #   _, writable_ios, = IO.select(nil, @write_ios, nil)
 

@@ -4,7 +4,7 @@ require 'json'
 require 'codenet_bugs/jsonl'
 require 'codenet_bugs/thread_pool'
 require 'codenet_bugs/test_worker_pool'
-require 'codenet_bugs/test_runner2'
+require 'codenet_bugs/test_runner'
 require 'codenet_bugs/logger'
 
 module CodenetBugs
@@ -13,11 +13,13 @@ module CodenetBugs
 
     def each(...) = @bugs.each_value(...)
 
-    def initialize(bugs, logger_level: Logger::INFO)
+    def initialize(bugs, logger_level: Logger::INFO, logger: nil)
       @bugs = bugs
-      @logger = Logger.new
+      @logger = Logger.new || logger
       @logger.level = logger_level
     end
+
+    def size = @bugs.size
 
     def restart!(checkpoint)
       @logger.warn "Restarting process..."
@@ -45,7 +47,7 @@ module CodenetBugs
       end
 
       progress_proc = proc do |bug_index|
-        @logger.progress = (all_rows.size + bug_index.to_f + 0.5) / @bugs.size
+        (all_rows.size + bug_index.to_f + 0.5) / @bugs.size
       end
 
       eval_rows = evaluate_bugs(bugs, tests, sanity_check:, abort_on_timeout:, abort_on_fail:, abort_on_error:, progress_proc:)
@@ -56,6 +58,10 @@ module CodenetBugs
       File.write(checkpoint, all_rows.to_h.to_json)
       @logger.info "Writing checkpoint to #{checkpoint}"
       restart! checkpoint if restart
+    end
+
+    def inspect
+      to_s
     end
 
     private
@@ -69,14 +75,14 @@ module CodenetBugs
       bugs.each_with_index do |(bug_id, bug), bug_index|
         pool.post do
           io_samples = tests[bug.problem_id]
-          progress_proc&.call bug_index
-          #p bug.source_submission.accepted?
-          #p bug.target_submission.accepted?
+          progress = progress_proc&.call bug_index
+          #p bug.buggy_submission.accepted?
+          #p bug.fixed_submission.accepted?
 
           begin
             rows =
               if sanity_check
-                runs = test_worker_pool.submit(bug.target_submission, io_samples,
+                runs, worker_info = test_worker_pool.submit(bug.fixed_submission, io_samples,
                                               abort_on_timeout: abort_on_timeout,
                                               abort_on_error: abort_on_error,
                                               abort_on_fail: abort_on_fail)
@@ -84,7 +90,7 @@ module CodenetBugs
                 [runs]
               else
                 bug.candidate_submissions.inject([]) do |acc, candidate_submission|
-                  runs = test_worker_pool.submit(candidate_submission, io_samples,
+                  runs, worker_info = test_worker_pool.submit(candidate_submission, io_samples,
                                                     abort_on_timeout: abort_on_timeout,
                                                     abort_on_error: abort_on_error,
                                                     abort_on_fail: abort_on_fail)
@@ -93,14 +99,14 @@ module CodenetBugs
                   acc
                 end
               end
-            #rows = IOSampleRunner.new(bug.source_submission, io_samples, abort_on_timeout: abort_on_timeout).run!
-            #rows2 = IOSampleRunner.new(bug.target_submission, io_samples, abort_on_timeout: abort_on_timeout).run!
+            #rows = IOSampleRunner.new(bug.buggy_submission, io_samples, abort_on_timeout: abort_on_timeout).run!
+            #rows2 = IOSampleRunner.new(bug.fixed_submission, io_samples, abort_on_timeout: abort_on_timeout).run!
             eval_rows_mutex.synchronize do
               eval_rows[bug.id] = rows if rows
             end
             max_run = rows.max_by { |runs| runs.count { _1.fetch(:result) == 'pass' }}
             passed = max_run.all? { _1.fetch(:result) == 'pass' }
-            @logger.info("Bug #{bug.id} (#{bug.language}): #{passed} #{max_run ? max_run.size : 0}/#{io_samples.size}")
+            @logger.info("[#{(progress * 100).round}%] [Worker#{worker_info[:worker_id]}] Bug #{bug.id} (#{bug.language}): #{passed} #{max_run ? max_run.size : 0}/#{io_samples.size}")
           rescue TestRunner::BWrapError => e
             @logger.error e
             pool.stop!
@@ -115,8 +121,13 @@ module CodenetBugs
     end
 
     class << self
-      def load_internal(preds_filename = nil)
-        filenames = Dir[File.join(CodenetBugs.data_dir, '*_{c,cpp,go,java,javascript,php,python,ruby}_*.jsonl.gz')]
+      SPLITS = %i[train valid test].freeze
+      ALL_LANGUAGES = %i[c cpp go java javascript php python ruby].freeze
+
+      def load_internal(split = nil, preds_filename = nil, languages: ALL_LANGUAGES)
+        raise ArgumentError, "invalid split '#{split}'" unless split.nil? || SPLITS.include?(split)
+
+        filenames = Dir[File.join(CodenetBugs.data_dir, 'export', "*_{#{Array(languages).join(',')}}_#{split}*.jsonl.gz")]
         load(filenames, preds_filename)
       end
 
@@ -130,25 +141,26 @@ module CodenetBugs
           end
         end
 
+        logger = Logger.new
         bugs = {}
 
         filenames.zip(languages) do |filename, language|
           JSONL.load_file(filename) do |hash|
             problem_id = hash.fetch(:problem_id).to_sym
 
-            source_submission = Submission.new(
-              id: hash.fetch(:source_submission_id),
-              content: hash.fetch(:source),
-              main_class: hash[:source_main_class],
+            buggy_submission = Submission.new(
+              id: hash.fetch(:buggy_submission_id),
+              code: hash.fetch(:buggy_code),
+              main_class: hash[:buggy_main_class],
               accepted: false,
               problem_id:,
               language:, 
             )
 
-            target_submission = Submission.new(
-              id: hash.fetch(:target_submission_id),
-              content: hash.fetch(:target),
-              main_class: hash[:target_main_class],
+            fixed_submission = Submission.new(
+              id: hash.fetch(:fixed_submission_id),
+              code: hash.fetch(:fixed_code),
+              main_class: hash[:fixed_main_class],
               accepted: true,
               problem_id:,
               language:
@@ -161,8 +173,8 @@ module CodenetBugs
               user_id: hash.fetch(:user_id).to_sym,
               labels: hash.fetch(:labels),
               change_count: hash.fetch(:change_count),
-              source_submission:,
-              target_submission:
+              buggy_submission:,
+              fixed_submission:
             )
 
             raise 'duplicate bug' if bugs.key? bug.id
@@ -173,12 +185,18 @@ module CodenetBugs
 
         if preds_filename
           JSONL.load_file(preds_filename) do |hash|
-            bug = bugs.fetch(hash[:id])
-            candidate_submissions = hash.fetch(:preds).map do |predicted_content|
+            bug = bugs[hash[:id]]
+
+            if bug.nil?
+              logger.warn("Prediction for unknown bug #{hash[:id]}")
+              next
+            end
+
+            candidate_submissions = hash.fetch(:preds).map do |predicted_code|
               Submission.new(
-                id: bug.source_submission.id,
-                content: predicted_content,
-                main_class: bug.target_submission.main_class,
+                id: bug.buggy_submission.id,
+                code: predicted_code,
+                main_class: bug.fixed_submission.main_class,
                 accepted: true,
                 problem_id: bug.problem_id,
                 language: bug.language
@@ -188,7 +206,7 @@ module CodenetBugs
           end
         end
 
-        new bugs
+        new bugs, logger: logger
       end
 
       private :new

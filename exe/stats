@@ -7,7 +7,8 @@ require 'json'
 require 'pp'
 require 'diffy'
 
-require 'codenet_bugs/evaluator'
+require 'codenet_bugs'
+require 'codenet_bugs/bugs'
 
 options = {}
 OptionParser.new do |opts|
@@ -18,16 +19,10 @@ OptionParser.new do |opts|
   # end
 end.parse!
 
-
-
-*submission_filenames, preds_filename, runs_filename = ARGV
+preds_filename, runs_filename = ARGV
 
 runs = JSON.load_file runs_filename
-bugs = CodenetBugs::Evaluator::Bugs.load submission_filenames, preds_filename
-
-puts bugs['58443'].target_submission.content
-pp runs['58443']
-exit
+bugs = CodenetBugs::Bugs.load_internal :valid, preds_filename
 
 by_lang =  bugs.group_by{ _1.language }.transform_values { _1.size }
 by_change_count =  bugs.group_by{ _1.change_count }.transform_values { _1.size }
@@ -50,11 +45,19 @@ valid_bugs, failing_bugs = runs.partition { |_bug_id, pred_runs|  pred_runs.any?
 p ['valid rate', valid_bugs.size/runs.size.to_f]
 p ['runs', runs.size]
 p ['size', valid_bugs.size]
-puts failing_bugs.map{_1.first }.sort.join("\n")
+p ['size', failing_bugs.size]
+#puts failing_bugs.map{_1.first }.sort.join("\n")
+valid_by_lang = valid_bugs.group_by{ bugs[_1.first].language }
+p valid_by_lang.transform_values { _1.size }.merge(by_lang) { |key, old, new| old / new.to_f }
+
+failing_by_lang = failing_bugs.group_by{ bugs[_1.first].language }
+pp failing_by_lang
+
+pp failing_by_lang[:c].map { _1.first }
+pp failing_by_lang[:cpp].map { _1.first }
+
 exit
-valid_by_lang = valid_bugs.group_by{ bugs[_1.first].language }.transform_values { _1.size }.merge(by_lang) { |key, old, new| old / new.to_f }
 valid_by_change_count = valid_bugs.group_by{ bugs[_1.first].change_count }.transform_values { _1.size }.merge(by_change_count) { |key, old, new| old / new.to_f }
-p valid_by_lang
 p valid_by_change_count
 
 count = valid_bugs.count do |bug_id, pred_runs|

@@ -3,6 +3,8 @@ require 'bigdecimal'
 require 'logger'
 require 'io/wait'
 require 'strscan'
+require 'tmpdir'
+require 'tempfile'
 
 module CodenetBugs
   class TestRunner
@@ -12,7 +14,7 @@ module CodenetBugs
     NO_RLIMIT_LANGUAGES = %i[java javascript go].freeze
     JAVA_CLASS_REGEX = /^\s*(?:(?:public|static|protected|private|final)\s+)*class\s+([a-zA-Z0-9_]+)/
 
-    MAX_READ_WAIT = 3
+    DEFAULT_TIMEOUT = 5
 
     class OutputParser
       class ParseError < StandardError; end
@@ -186,7 +188,7 @@ module CodenetBugs
       if logger
         @logger = logger
       else
-        @logger = defined?(Rails) ? Rails.logger : Logger.new($stdout)
+        @logger = defined?(Rails) ? Rails.logger : ::Logger.new($stdout)
         @logger.level = logger_level
       end
     end
@@ -195,9 +197,9 @@ module CodenetBugs
       @counters = {timeout: 0, fail: 0, error: 0}
       @aborted = false
 
-      @logger.debug "Running #{@submission.id} on #{@io_samples.map(&:id)} (worker #{Parallel.worker_number}"
+      @logger.debug "Running #{@submission.id} on #{@io_samples.map(&:id)}"
       return [] if @io_samples.empty?
-      compile_and_run_in_sandbox
+      compile_and_run
     end
 
     def aborted? = @aborted
@@ -211,172 +213,110 @@ module CodenetBugs
       output.length > max_size ? "#{output[0...max_size]}<truncated>" : output
     end
 
-    def compile_and_run(cmd, input_filename, input, *args)
+    def run_compiler(cmd, input_filename, input, *args, env: {})
       Dir.mktmpdir do |dir|
-        #Dir.chdir(dir) do
+        Dir.chdir(dir) do
           File.write(File.join(dir, input_filename), input)
-          output, status = Open3.capture2e(*cmd, input_filename, *args, chdir: dir)
+          output, status = Open3.capture2e(env.merge('LANG' => 'en_US.UTF-8'), *cmd, input_filename, *args, chdir: dir)
           if status.exitstatus.zero?
             yield dir
           else
             # FIXME: pass error message
             raise CompilationError.new(output)
           end
-        #end
-      end
-    end
-
-    def find_java_main_class(submission)
-      tree = submission.tree
-      query = TreeSitter::Java::Query.new("([(method_declaration)] @f)")
-      methods = []
-      query.run tree.root_node do |captures, _index|
-        captures.each do |n|
-          methods << n if n.dig(:name)&.text == 'main'
         end
       end
-
-      return nil if methods.size > 1 || methods.empty?
-
-      main_method = methods.first
-      p main_method.parents.map(&:type)
-      class_decl = main_method.parents.find { _1.type? :class_declaration }
-      class_decl.dig(:name).text
-
-      # Dir.chdir(dir) do
-      #   Dir['*.class'].each do |class_filename|
-      #     class_name = File.basename(class_filename)
-      #     output, status = Open3.capture2e('javap', class_name)
-      #     if status.success?
-      #       return class_name if output.include?('void main(')
-      #     end
-      #   end
-      # end
     end
 
-    def compile_and_run_java(&block)
+    def compile_java(&block)
       # we ignore packages to simplify compilation
-      content = @submission.content.sub(/package\s+([a-zA-Z0-9_.]+)\s*;/, '')
+      code = @submission.code.sub(/package\s+([a-zA-Z0-9_.]+)\s*;/, '')
       class_name = @submission.main_class
-      # class_names = content.scan(JAVA_CLASS_REGEX).flatten
+      # class_names = code.scan(JAVA_CLASS_REGEX).flatten
       # class_name = class_names.first if class_names.size == 1
       # class_name ||= find_java_main_class(@submission)
       raise CompilationError, 'missing main class' if class_name.nil?
 
-      compile_and_run('javac', "#{class_name}.java", content) do |tmp_dir|
+      run_compiler(['javac', '-encoding', 'UTF-8'], "#{class_name}.java", code) do |tmp_dir|
         class_filenames = Dir[File.join(tmp_dir, '*.class')]
-        sandbox_filenames = class_filenames.map { File.join('/tmp', File.basename(_1)) }
-        block[class_filenames.zip(sandbox_filenames), { class_name: class_name }]
+        # sandbox_filenames = class_filenames.map { File.join('/tmp', File.basename(_1)) }
+        block[class_filenames, { class_name: class_name }]
       end
     end
 
-    def compile_and_run_c(cc, ext, &block)
-      compile_and_run(cc, "program.#{ext}", @submission.content, '-lm') do |tmp_dir|
-        block[[[File.join(tmp_dir, 'a.out'), '/tmp/a.out']], {}]
+    def compile_c(cc, ext, &block)
+      run_compiler(cc, "file.#{ext}", @submission.code, '-lm') do |tmp_dir|
+        block[File.join(tmp_dir, 'a.out'), {}]
       end
     end
 
-    def compile_and_run_go(&block)
-      compile_and_run(['go', 'build', '-o', 'a.out'], 'program.go', @submission.content) do |tmp_dir|
-        block[[[File.join(tmp_dir, 'a.out'), '/tmp/a.out']], {}]
+    def compile_go(&block)
+      run_compiler(['go', 'build', '-o', 'a.out'], 'file.go', @submission.code, env: {'GOCACHE' => '/tmp/'} ) do |tmp_dir|
+        block[File.join(tmp_dir, 'a.out'), {}]
       end
     end
 
-    def run_interpreter(&block)
-      Tempfile.create(['program', @submission.filename_ext]) do |tmp_file|
-        tmp_file.write(@submission.content)
-        tmp_file.flush
-        tmp_file.rewind
-        block[[[tmp_file, "/tmp/file.#{@submission.filename_ext}"]], {}]
+    def dummy_compile(&block)
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          file_path = File.join(dir, "file.#{@submission.filename_ext}")
+          File.write(file_path, @submission.code)
+          block[file_path, {}]
+        end
       end
     end
 
     def compile(&block)
       case @submission_language
       when :java
-        compile_and_run_java(&block)
+        compile_java(&block)
       when :cpp
-        compile_and_run_c('g++', 'cpp', &block)
+        compile_c('g++', 'cpp', &block)
       when :c
-        compile_and_run_c('gcc', 'c', &block)
+        compile_c('gcc', 'c', &block)
       when :go
-        compile_and_run_go(&block)
+        compile_go(&block)
       else
-        run_interpreter(&block)
+        dummy_compile(&block)
       end
     end
 
-    def bwrap_cmd(fd_map, context)
-      cmd = [
-        '/usr/bin/bwrap',
-        '--ro-bind', '/usr', '/usr',
-        '--ro-bind', '/etc/alternatives', '/etc/alternatives',
-        '--dir', '/tmp',
-        '--dir', '/var',
-        '--symlink', '../tmp', 'var/tmp',
-        '--proc', '/proc',
-        '--dev', '/dev',
-        '--symlink', 'usr/lib', '/lib',
-        '--symlink', 'usr/lib64', '/lib64',
-        '--symlink', 'usr/bin', '/bin',
-        '--symlink', 'usr/sbin', '/sbin',
-        '--chdir', '/tmp',
-        '--unshare-all',
-        '--new-session',
-        '--die-with-parent'
-      ]
-
-      fd_map.each do |fd, filename|
-        cmd << '--perms' << '0760'
-        cmd << '--file' << fd.to_s << filename
-      end
-
-      _, filename = fd_map.first
-
-      cmd << '--setenv' << 'OPENBLAS_NUM_THREADS' << '1'
-      cmd << '--setenv' << 'GOTO_NUM_THREADS' << '1'
-      cmd << '--setenv' << 'OMP_NUM_THREADS' << '1'
-
+    def cmd(filename, context)
       case @submission_language
       when :ruby
-        cmd << '/usr/bin/ruby' << '--disable-gems' << filename
+        ['/usr/bin/ruby', '--disable-gems', filename]
       when :python
-        cmd << '/usr/bin/python3' << filename
+        ['/usr/bin/python3', filename]
       when :php
-        cmd << '/usr/bin/php7.4' << filename
+        ['/usr/bin/php7.4', filename]
       when :javascript
-        cmd << '/usr/bin/node' << '--max-old-space-size=512' << filename
+        ['/usr/bin/node', '--max-old-space-size=512', filename]
       when :c, :cpp, :go
-        cmd << './a.out'
-      # when 'go'
-        # cmd << '--setenv' << 'GOPATH' << '/tmp'
-        # cmd << '--setenv' << 'GOCACHE' << '/tmp'
-        # cmd << '/usr/bin/go' << 'run' << filename
+        ['./a.out']
       when :java
-        cmd << '/usr/bin/java' << '-mx512m' << '-XX:TieredStopAtLevel=1' << context.fetch(:class_name)
+        ['/usr/bin/java', '-mx512m', '-XX:TieredStopAtLevel=1', context.fetch(:class_name)]
         # cmd << '/usr/lib/jvm/java-17-openjdk-amd64/bin/java' <<
       else
         raise "language #{@submission_language} is not supported"
       end
-      cmd
     end
 
     def abort?(result_type, abort_count, result1, result2=result1)
-      if result_type == result1 || result_type == result2 && abort_count
+      if abort_count && (result_type == result1 || result_type == result2)
         @counters[result1] += 1
-        if abort_count == true || @counters[result1] >= abort_count
-          @logger.warn "#{@counters[result1]} #{result1}s...aborting"
+        if abort_count == true || @counters.fetch(result1) >= abort_count
+          @logger.debug "#{@counters.fetch(result1)} #{result1}s...aborting"
           return true
         end
       end
       false
     end
 
-    def run_all_samples(file_mappings, context)
+    def run_all_samples(filename, context)
       @io_samples.each_with_object([]) do |io_sample, results|
-        result = run_sample_in_sandbox(file_mappings, context, io_sample)
+        result = run_sample(filename, context, io_sample)
         if result
-          result_type = result[:result]
+          result_type = result.fetch(:result)
           results << result
 
           return results if abort?(result_type, @abort_on_timeout, :timeout, :timeout2) ||
@@ -386,115 +326,102 @@ module CodenetBugs
       end
     end
 
-    def run_sample_in_sandbox(file_mappings, context, io_sample)
+    def read_with_timeout(io, timeout)
+      buf = StringIO.new
+      start_time = Time.now
+
+      loop do
+        return :timeout if Time.now - start_time >= timeout
+
+        read_result = io.read_nonblock(512, exception: false)
+        if read_result == :wait_readable
+          select_result = IO.select([io], nil, nil, 0.1)
+          next if select_result # there is something to read, restart loop
+        elsif read_result.nil?
+          # eof, done reading
+          break
+        else
+          buf.write read_result
+        end
+      end
+      buf.string
+    end
+
+    def capture3_with_timeout(cmd, env: {}, timeout: DEFAULT_TIMEOUT, stdin_data: '', binmode: false, **opts)
+      Open3.popen3(env, *cmd, opts) {|i, o, e, t|
+        if binmode
+          i.binmode
+          o.binmode
+          e.binmode
+        end
+        out_reader = Thread.new do
+          read_with_timeout o, timeout
+        end
+        err_reader = Thread.new do
+          read_with_timeout e, timeout
+        end
+
+        epipe = false
+
+        begin
+          i.write stdin_data
+          # some inputs lack final newline
+          i.write "\n" unless stdin_data.end_with?("\n")
+        rescue Errno::EPIPE
+          epipe = true
+        end
+
+        begin
+          i.close
+        rescue Errno::EPIPE
+          epipe = true
+        end
+
+        out_value = out_reader.value
+        err_value = err_reader.value
+
+        if out_value == :timeout || err_value == :timeout
+          begin
+            Process.kill 'KILL', t.pid
+          rescue Errno::ESRCH
+            @logger.info "pid was no longer alive"
+          end
+        end
+        [out_value, err_value, t.value, epipe]
+      }
+    end
+
+    def run_sample(filename, context, io_sample)
       sample_input = io_sample.input
       sample_output = io_sample.output.strip
 
-      fd_map = {}
       popen_opts = {
         unsetenv_others: true,
         rlimit_cpu: 10
       }
+      env = {
+        'OPENBLAS_NUM_THREADS' => '1',
+        'GOTO_NUM_THREADS' => '1',
+        'OMP_NUM_THREADS' => '1',
+        'LANG' => 'en_US.UTF-8',
+      }
 
-      file_mappings.each_with_index do |(host_io_or_filename, sandbox_filename), index|
-        fd = 11 + (Parallel.worker_number || 0) * 10 + index
-        popen_opts[fd] = host_io_or_filename
-        fd_map[fd] = sandbox_filename
+      cmd = cmd(filename, context)
 
-        if host_io_or_filename.is_a?(IO)
-          host_io_or_filename.rewind
-        end
-      end
-
-      cmd = bwrap_cmd(fd_map, context)
-
-      output = nil
-      exit_status = nil
-      error_output = nil
       result = nil
 
       # Limit causes JVM to crash. We can limit memory using JVM anyway
       popen_opts[:rlimit_as] = 512 * 1024 * 1024 unless NO_RLIMIT_LANGUAGES.include?(@submission_language)
 
-      @logger.debug("Running submission #{@submission.id} on sample #{io_sample.id} on worker #{Parallel.worker_number} (#{file_mappings.inspect})")
+      @logger.debug("Running submission #{@submission.id} on sample #{io_sample.id}")
 
-      Open3.popen3({}, *cmd, popen_opts) do |stdin, stdout, stderr, wait_thr|
+      output, error_output, exit_status, epipe = capture3_with_timeout(cmd, env: env, stdin_data: sample_input, **popen_opts)
 
-        out_reader = Thread.new do
-          begin
-            next :timeout if stdout.wait_readable(MAX_READ_WAIT).nil?
-            stdout.read
-          rescue IOError
-            @logger.warn('IOError in reader thread')
-            :io_error
-          end
-        end
-        err_reader = Thread.new do
-          begin
-            stderr.read
-          rescue IOError
-            @logger.warn('IOError in stderr reader thread')
-            :io_error
-          end
-        end
-
-        kill_thr = Thread.new do
-          sleep(MAX_READ_WAIT + 3)
-          if wait_thr.alive?
-            @logger.info "wait thread is still alive...killing pid"
-            begin
-              Process.kill 'KILL', wait_thr.pid
-            rescue Errno::ESRCH
-              @logger.info "pid was no longer alive"
-            end
-          end
-        end
-
-        begin
-          stdin.write sample_input
-          stdin.write "\n"
-          stdin.close
-        rescue Errno::EPIPE
-          @logger.warn "ignoring EPIPE"
-        end
-
-
-        output = out_reader.value
-        error_output = err_reader.value
-
-        if output == :io_error || error_output == :io_error
-          @logger.warn "IOError in thread..."
-          return nil
-        end
-
-        if output == :timeout || output == :io_error
-          result = output
-          output = nil
-          @logger.debug 'killing process...'
-          begin
-            Process.kill 'KILL', wait_thr.pid
-          rescue Errno::ESRCH
-            @logger.debug '...killing failed (ESRCH)'
-          end
-        end
-
-        # if wait_thr.alive?
-        #   @logger.warn 'killing process (wait thread timeout)'
-        #   begin
-        #     Process.kill 'KILL', wait_thr.pid
-        #   rescue Errno::ESRCH
-        #     @logger.warn 'pid no longer alive'
-        #   end
-        # end
-
-        exit_status = wait_thr.value
+      if output == :timeout || error_output == :timeout
+        result = :timeout
+        output = nil
+        error_output = nil
       end
-
-      # p ['run done', output, error_output, exit_status]
-
-      # NOTE: we storing output as text, which causes trouble if output is binary
-      # Output should be encodable as UTF-8. However, some programs output invalid UTF-8.
-      # We drop non-encodable bytes
 
       output = output&.size&.positive? ? output.encode('UTF-8', invalid: :replace, replace: '') : nil
       error_output = error_output&.size&.positive? ? error_output.encode('UTF-8', invalid: :replace, replace: '') : nil
@@ -507,25 +434,20 @@ module CodenetBugs
       end
 
       @logger.debug("Program process exited with status #{exit_status} (output length #{output&.size})")
-      # puts "=========================="
-      # p sample_output
-      # puts "----------------------"
-      # p output
-      # puts output == sample_output
-      # puts "=========================="
-
       if output && @truncate_output
         output = truncate_output(output, [(1.8 * sample_output.size).to_i, MAX_OUTPUT_LENGTH].max)
       end
 
       result ||=
         if exit_status.signaled? || exit_status.termsig
-          :timeout2
+          :error
         elsif self.class.output_matches?(sample_output, output, @submission.problem_id)
           :pass
         elsif exit_status.exitstatus != 0 && error_output
+          @logger.error("error output and epipe") if epipe
           :error
         else
+          @logger.error("fail output and epipe") if epipe
           :fail
         end
 
@@ -544,7 +466,7 @@ module CodenetBugs
 
       if (@submission.accepted? && result != :pass) ||
           (!@submission.accepted? && result == :pass)
-        @logger.warn("Run result does not match submission status: #{@submission.id} #{icon}")
+        @logger.debug("Run result does not match submission status: #{@submission.id} #{icon}")
       end
 
       {
@@ -556,20 +478,19 @@ module CodenetBugs
       }
     end
 
-    def compile_and_run_in_sandbox
+    def compile_and_run
       attributes =
         begin
-          compile do |file_mappings, context|
+          compile do |filename, context|
             @logger.debug "Compiling submission #{@submission.id} done"
             begin
-              run_all_samples(file_mappings, context)
+              run_all_samples(filename, context)
             # rescue Errno::EPIPE, IOError => e
             #   @logger.warn "Received EPIPE/IOError, repeating execution (#{e})"
             #   retry
             end
           end
         rescue CompilationError => e
-          @logger.warn("Submission #{@submission.id} failed to compile (#{e.message})")
           [{
             result: :compilation_error,
             submission_id: @submission.id,

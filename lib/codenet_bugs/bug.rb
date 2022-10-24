@@ -1,37 +1,36 @@
 module CodenetBugs
   class Bug
-    attr_reader :id, :language, :problem_id, :user_id, :source_submission,
-                :target_submission, :candidate_submissions, :labels, :change_count
+    attr_reader :id, :language, :problem_id, :user_id, :buggy_submission,
+                :fixed_submission, :candidate_submissions, :labels, :change_count
     attr_writer :candidate_submissions
 
-    def initialize(id:, language:, problem_id:, user_id:, labels:, source_submission:, target_submission:, change_count:)
+    def initialize(id:, language:, problem_id:, user_id:, labels:, buggy_submission:, fixed_submission:, change_count:)
       @id = id
       @language = language
       @problem_id = problem_id
       @user_id = user_id
       @labels = labels
-      @source_submission = source_submission
-      @target_submission = target_submission
+      @buggy_submission = buggy_submission
+      @fixed_submission = fixed_submission
       @change_count = change_count
     end
 
     def diff(before_name, after_name)
       require 'diffy'
 
-      before = submission_by_name before_name
-      after = submission_by_name after_name
-      Diffy::Diff.new(before.content, after.content).to_s(:color)
+      before = submission before_name
+      after = submission after_name
+      Diffy::Diff.new(before.code, after.code).to_s(:color)
     end
 
-    private
-    def submission_by_name(name)
-      case name
-      when :source
-        source_submission
-      when :target
-        target_submission
+    def submission(version)
+      case version
+      when :buggy
+        buggy_submission
+      when :fixed
+        fixed_submission
       when Integer
-        candidate_submissions[name]
+        candidate_submissions[version]
       else
         nil
       end

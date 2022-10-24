@@ -18,7 +18,7 @@ end.parse!
 
 preds_filename = ARGV.first
 
-bugs = CodenetBugs::Bugs.load_internal preds_filename
+bugs = CodenetBugs::Bugs.load_internal :valid #, preds_filename
 tests = CodenetBugs::Tests.load_internal
 
 bugs.evaluate! tests, checkpoint: options[:checkpoint]

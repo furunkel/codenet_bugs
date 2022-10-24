@@ -11,7 +11,7 @@ module JSONL
   end
 
   def write_file(filename, lines)
-    Zlib::GzipWriter.open('hoge.gz') do |gz|
+    Zlib::GzipWriter.open(filename) do |gz|
       lines.each do |line|
         gz.puts(JSON.fast_generate(line))
       end

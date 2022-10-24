@@ -12,12 +12,11 @@ module CodenetBugs
       go: 'go'
     }.freeze
 
-    attr_reader :id, :content, :problem_id, :language, :main_class, :accepted
-    attr_writer :content
+    attr_reader :id, :code, :problem_id, :language, :main_class, :accepted
 
-    def initialize(id:, content:, problem_id:, language:, main_class:, accepted:)
+    def initialize(id:, code:, problem_id:, language:, main_class:, accepted:)
       @id = id
-      @content = content
+      @code = code
       @problem_id = problem_id
       @language = language.to_sym
       @main_class = main_class
@@ -29,7 +28,7 @@ module CodenetBugs
     end
 
     def to_h
-      {id:, content:, problem_id:, language:, main_class:, accepted:}
+      {id:, code:, problem_id:, language:, main_class:, accepted:}
     end
 
     def accepted? = @accepted

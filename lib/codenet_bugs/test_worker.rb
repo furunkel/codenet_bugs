@@ -7,7 +7,7 @@ require 'json'
 require 'codenet_bugs/bug'
 require 'codenet_bugs/test'
 require 'codenet_bugs/submission'
-require 'codenet_bugs/test_runner2'
+require 'codenet_bugs/test_runner'
 
 module CodenetBugs
   class TestWorker
@@ -52,7 +52,7 @@ module CodenetBugs
         @logger.debug("Running submisison #{submission} on #{io_samples.map(&:id)}")
 
         s = Time.now
-        runner = TestRunner2.new(submission, io_samples, logger: @logger, **options)
+        runner = TestRunner.new(submission, io_samples, logger: @logger, **options)
         results = runner.run!
         @logger.debug("running took #{Time.now - s} seconds")
 

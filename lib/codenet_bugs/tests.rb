@@ -8,9 +8,13 @@ module CodenetBugs
       @tests = tests
     end
 
+    def inspect
+      to_s
+    end
+
     class << self
       def load_internal
-        filename = File.join(CodenetBugs.data_dir, 'export_tests_all.jsonl.gz')
+        filename = File.join(CodenetBugs.data_dir, 'export', 'export_tests_all.jsonl.gz')
         load(filename)
       end
 
