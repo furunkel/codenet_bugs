@@ -14,17 +14,24 @@ module CodenetBugs
 
       desc "junit BUG_IDS", "generate JUnit tests for the specified bugs"
       method_option :o, desc: 'Output directory', type: :string, required: true
-      method_option :version, desc: 'Bug version (prediction, buggy or fixed)', type: :string, default: :buggy
+      method_option :version, desc: 'Bug version (prediction, buggy or fixed)', type: :string, required: true
+      method_option :limit, desc: 'Only export the first n bugs', type: :numeric, default: nil
       def junit(*bug_ids)
         require 'codenet_bugs/junit_generator'
 
         bugs = Bugs.load_internal :test, languages: :java
+
+        p bugs.size
+
         version = options.fetch(:version).to_sym
         output_dir = options.fetch(:o)
 
         tests = Tests.load_internal
 
-        generator = JUnitGenerator.new(bugs.take(1), tests, output_dir:, version:)
+        if options[:limit]
+          bugs = bugs.take(options[:limit])
+        end
+        generator = JUnitGenerator.new(bugs, tests, output_dir:, version:)
         generator.generate!
       end
 
