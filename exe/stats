@@ -7,8 +7,8 @@ require 'json'
 require 'pp'
 require 'diffy'
 
-require 'codenet_bugs'
-require 'codenet_bugs/bugs'
+require 'run_bug_run'
+require 'run_bug_run/bugs'
 
 options = {}
 OptionParser.new do |opts|
@@ -22,7 +22,7 @@ end.parse!
 preds_filename, runs_filename = ARGV
 
 runs = JSON.load_file runs_filename
-bugs = CodenetBugs::Bugs.load_internal :valid, preds_filename
+bugs = RunBugRun::Bugs.load_internal :valid, preds_filename
 
 by_lang =  bugs.group_by{ _1.language }.transform_values { _1.size }
 by_change_count =  bugs.group_by{ _1.change_count }.transform_values { _1.size }
@@ -33,8 +33,8 @@ valid_bugs, failing_bugs = runs.partition { |_bug_id, pred_runs|  pred_runs.any?
 
 #File.write("/tmp/ids_#{File.basename(runs_filename)}.txt", valid_bugs.keys.sort.join("\n"))
 
-# a = File.readlines('/tmp/ids_codenet_bugs_checkpoint_1665059901.json.txt', chomp: true)
-# b = File.readlines('/tmp/ids_codenet_bugs_checkpoint_1665859597.json.txt', chomp: true)
+# a = File.readlines('/tmp/ids_run_bug_run_checkpoint_1665059901.json.txt', chomp: true)
+# b = File.readlines('/tmp/ids_run_bug_run_checkpoint_1665859597.json.txt', chomp: true)
 
 # (a - b).each do |id|
 #   pp runs[id]
@@ -97,7 +97,7 @@ end
 
 
 
-#bugs = CodenetBugs::Evaluator::Bugs.load submission_filenames, preds_filename
-#tests = CodenetBugs::Evaluator::Tests.load tests_filename
+#bugs = RunBugRun::Evaluator::Bugs.load submission_filenames, preds_filename
+#tests = RunBugRun::Evaluator::Tests.load tests_filename
 #bugs.evaluate! tests, checkpoint: options[:checkpoint]
 

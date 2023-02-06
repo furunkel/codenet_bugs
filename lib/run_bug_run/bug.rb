@@ -1,10 +1,10 @@
-module CodenetBugs
+module RunBugRun
   class Bug
     attr_reader :id, :language, :problem_id, :user_id, :buggy_submission,
-                :fixed_submission, :candidate_submissions, :labels, :change_count
+                :fixed_submission, :candidate_submissions, :labels, :change_count, :line_hunks
     attr_writer :candidate_submissions
 
-    def initialize(id:, language:, problem_id:, user_id:, labels:, buggy_submission:, fixed_submission:, change_count:)
+    def initialize(id:, language:, problem_id:, user_id:, labels:, buggy_submission:, fixed_submission:, change_count:, line_hunks:)
       @id = id
       @language = language
       @problem_id = problem_id
@@ -13,6 +13,7 @@ module CodenetBugs
       @buggy_submission = buggy_submission
       @fixed_submission = fixed_submission
       @change_count = change_count
+      @line_hunks = line_hunks
     end
 
     def diff(before_name, after_name)

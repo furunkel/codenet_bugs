@@ -1,4 +1,4 @@
-module CodenetBugs
+module RunBugRun
   class Test
     attr_reader :id, :input, :output
 

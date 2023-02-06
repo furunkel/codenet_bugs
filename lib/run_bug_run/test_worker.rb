@@ -4,12 +4,12 @@ require 'io/wait'
 require 'logger'
 require 'json'
 
-require 'codenet_bugs/bug'
-require 'codenet_bugs/test'
-require 'codenet_bugs/submission'
-require 'codenet_bugs/test_runner'
+require 'run_bug_run/bug'
+require 'run_bug_run/test'
+require 'run_bug_run/submission'
+require 'run_bug_run/test_runner'
 
-module CodenetBugs
+module RunBugRun
   class TestWorker
 
     HEADER = "BUGS".freeze

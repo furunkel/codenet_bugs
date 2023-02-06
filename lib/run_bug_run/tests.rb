@@ -1,4 +1,6 @@
-module CodenetBugs
+require 'run_bug_run/dataset'
+
+module RunBugRun
   class Tests
     def [](problem_id)
       @tests.fetch(problem_id)
@@ -13,14 +15,14 @@ module CodenetBugs
     end
 
     class << self
-      def load_internal
-        filename = File.join(CodenetBugs.data_dir, 'export', 'export_tests_all.jsonl.gz')
+      def load_internal(version: RunBugRun::Dataset.last_version)
+        filename = File.join(RunBugRun.data_dir, 'export', version, 'export_tests_all.jsonl.gz')
         load(filename)
       end
 
       def load(filename)
         tests = Hash.new { |h, k| h[k] = [] }
-        JSONL.load_file(filename) do |hash|
+        JSONUtils.load_file(filename).each do |hash|
           test = Test.new(
             id: hash.fetch(:id),
             input: hash.fetch(:input),

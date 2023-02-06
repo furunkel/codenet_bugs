@@ -1,6 +1,6 @@
 require 'logger'
 
-module CodenetBugs
+module RunBugRun
   class Logger < ::Logger
     attr_reader :progress
 

@@ -1,15 +1,30 @@
 require 'logger'
 require 'json'
 
-require 'codenet_bugs/jsonl'
-require 'codenet_bugs/thread_pool'
-require 'codenet_bugs/test_worker_pool'
-require 'codenet_bugs/test_runner'
-require 'codenet_bugs/logger'
+require 'run_bug_run/dataset'
+require 'run_bug_run/json_utils'
+require 'run_bug_run/thread_pool'
+require 'run_bug_run/test_worker_pool'
+require 'run_bug_run/test_runner'
+require 'run_bug_run/logger'
 
-module CodenetBugs
+module RunBugRun
   class Bugs
     include Enumerable
+
+    SPLITS = %i[train valid test].freeze
+    ALL_LANGUAGES = %i[c cpp go java javascript php python ruby].freeze
+
+    LANGUAGE_NAME_MAP = {
+      c: 'C',
+      cpp: 'C++',
+      javascript: 'JavaScript',
+      java: 'Java',
+      ruby: 'Ruby',
+      python: 'Python',
+      php: 'PHP',
+      go: 'Go'
+    }.freeze
 
     def each(...) = @bugs.each_value(...)
 
@@ -20,6 +35,7 @@ module CodenetBugs
     end
 
     def size = @bugs.size
+    def values_at(...) = @bugs.values_at(...)
 
     def restart!(checkpoint)
       @logger.warn "Restarting process..."
@@ -35,7 +51,7 @@ module CodenetBugs
       @bugs.keys
     end
 
-    def evaluate!(tests, sanity_check: true, abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, checkpoint: nil)
+    def evaluate!(tests, output_filename:, sanity_check: false, abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, checkpoint: nil)
       restart = false
       if checkpoint
         all_rows = JSON.load_file(checkpoint, symbolize_names: true).transform_keys(&:to_i)
@@ -54,8 +70,10 @@ module CodenetBugs
 
       all_rows.merge! eval_rows
 
-      checkpoint = "/tmp/codenet_bugs_checkpoint_#{Time.now.to_i}.json"
-      File.write(checkpoint, all_rows.to_h.to_json)
+      checkpoint = "/tmp/run_bug_run_checkpoint_#{Time.now.to_i}.json"
+      output = all_rows.to_h.to_json
+      File.write(checkpoint, output)
+      File.write(output_filename, output) if output_filename
       @logger.info "Writing checkpoint to #{checkpoint}"
       restart! checkpoint if restart
     end
@@ -66,7 +84,7 @@ module CodenetBugs
 
     private
 
-    def evaluate_bugs(bugs, tests, sanity_check: true, abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, progress_proc: nil)
+    def evaluate_bugs(bugs, tests, sanity_check: , abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, progress_proc: nil)
       test_worker_pool = TestWorkerPool.new logger: @logger, size: 8
       eval_rows = {}
       eval_rows_mutex = Mutex.new
@@ -88,6 +106,9 @@ module CodenetBugs
                                               abort_on_fail: abort_on_fail)
 
                 [runs]
+              elsif bug.candidate_submissions.nil?
+                puts "No candidates for bug #{bug.id}"
+                []
               else
                 bug.candidate_submissions.inject([]) do |acc, candidate_submission|
                   runs, worker_info = test_worker_pool.submit(candidate_submission, io_samples,
@@ -105,8 +126,12 @@ module CodenetBugs
               eval_rows[bug.id] = rows if rows
             end
             max_run = rows.max_by { |runs| runs.count { _1.fetch(:result) == 'pass' }}
-            passed = max_run.all? { _1.fetch(:result) == 'pass' }
-            @logger.info("[#{(progress * 100).round}%] [Worker#{worker_info[:worker_id]}] Bug #{bug.id} (#{bug.language}): #{passed} #{max_run ? max_run.size : 0}/#{io_samples.size}")
+            if max_run
+              passed = max_run.all? { _1.fetch(:result) == 'pass' }
+              @logger.info("[#{(progress * 100).round}%] [Worker#{worker_info[:worker_id]}] Bug #{bug.id} (#{bug.language}): #{passed} #{max_run ? max_run.size : 0}/#{io_samples.size}")
+            else
+              @logger.info("[#{(progress * 100).round}%] Bug #{bug.id} (#{bug.language}): no prediction found")
+            end
           rescue TestRunner::BWrapError => e
             @logger.error e
             pool.stop!
@@ -121,13 +146,10 @@ module CodenetBugs
     end
 
     class << self
-      SPLITS = %i[train valid test].freeze
-      ALL_LANGUAGES = %i[c cpp go java javascript php python ruby].freeze
-
-      def load_internal(split = nil, preds_filename = nil, languages: ALL_LANGUAGES)
+      def load_internal(split = nil,  preds_filename = nil, version: RunBugRun::Dataset.last_version, languages: ALL_LANGUAGES)
         raise ArgumentError, "invalid split '#{split}'" unless split.nil? || SPLITS.include?(split)
 
-        filenames = Dir[File.join(CodenetBugs.data_dir, 'export', "*_{#{Array(languages).join(',')}}_#{split}*.jsonl.gz")]
+        filenames = Dir[File.join(RunBugRun.data_dir, 'export', version, "*_{#{Array(languages).join(',')}}_#{split}*.jsonl.gz")]
         load(filenames, preds_filename)
       end
 
@@ -145,7 +167,7 @@ module CodenetBugs
         bugs = {}
 
         filenames.zip(languages) do |filename, language|
-          JSONL.load_file(filename) do |hash|
+          JSONUtils.load_file(filename).each do |hash|
             problem_id = hash.fetch(:problem_id).to_sym
 
             buggy_submission = Submission.new(
@@ -173,6 +195,7 @@ module CodenetBugs
               user_id: hash.fetch(:user_id).to_sym,
               labels: hash.fetch(:labels),
               change_count: hash.fetch(:change_count),
+              line_hunks: hash.fetch(:line_hunks),
               buggy_submission:,
               fixed_submission:
             )
@@ -184,7 +207,7 @@ module CodenetBugs
         end
 
         if preds_filename
-          JSONL.load_file(preds_filename) do |hash|
+          JSONUtils.load_file(preds_filename).each do |hash|
             bug = bugs[hash[:id]]
 
             if bug.nil?

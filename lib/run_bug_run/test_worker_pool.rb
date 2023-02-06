@@ -3,11 +3,11 @@ require 'stringio'
 require 'io/wait'
 require 'json'
 
-require 'codenet_bugs/bug'
-require 'codenet_bugs/test'
-require 'codenet_bugs/test_worker'
+require 'run_bug_run/bug'
+require 'run_bug_run/test'
+require 'run_bug_run/test_worker'
 
-module CodenetBugs
+module RunBugRun
 
   class TestWorkerPool
     SANDBOX_HOME = '/home/sandbox'.freeze
@@ -119,8 +119,8 @@ module CodenetBugs
 
     def run_worker_code(id)
       <<~RUBY
-        require 'codenet_bugs/test_worker'
-        CodenetBugs::TestWorker.new(id: #{id}, read_fd: 3, write_fd: 4).run!
+        require 'run_bug_run/test_worker'
+        RunBugRun::TestWorker.new(id: #{id}, read_fd: 3, write_fd: 4).run!
       RUBY
     end
 
@@ -128,7 +128,7 @@ module CodenetBugs
       ruby_bindir = RbConfig::CONFIG['bindir']
       ruby_path = RbConfig::CONFIG.values_at('bindir', 'libexecdir').join(':')
       ruby_prefix = RbConfig::CONFIG['prefix']
-      rubylib = ($LOAD_PATH + [File.join(CodenetBugs.root, 'lib')]).map { to_sandbox_path(_1) }.join(':')
+      rubylib = ($LOAD_PATH + [File.join(RunBugRun.root, 'lib')]).map { to_sandbox_path(_1) }.join(':')
 
       p ruby_path
       p [ruby_prefix, to_sandbox_path(ruby_prefix)]
@@ -139,7 +139,7 @@ module CodenetBugs
         '--ro-bind', '/usr', '/usr',
         '--ro-bind', '/etc/alternatives', '/etc/alternatives',
         '--ro-bind', ruby_prefix, to_sandbox_path(ruby_prefix),
-        '--ro-bind', CodenetBugs.root, to_sandbox_path(CodenetBugs.root),
+        '--ro-bind', RunBugRun.root, to_sandbox_path(RunBugRun.root),
         '--dir', '/tmp',
         '--dir', '/var',
         '--symlink', '../tmp', 'var/tmp',

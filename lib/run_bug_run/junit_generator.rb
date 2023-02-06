@@ -1,7 +1,7 @@
 require 'erb'
-require 'codenet_bugs'
+require 'run_bug_run'
 
-module CodenetBugs
+module RunBugRun
   class JUnitGenerator
     def initialize(bugs, tests, output_dir:, version:)
       @bugs = bugs
@@ -32,8 +32,8 @@ module CodenetBugs
     private
 
     def generate_bug(bug, tests)
-      package_name = "codenet_bugs_#{bug.id}"
-      template = File.read(File.join(CodenetBugs.data_dir, 'templates', 'BugTest.java.erb'))
+      package_name = "run_bug_run_#{bug.id}"
+      template = File.read(File.join(RunBugRun.data_dir, 'templates', 'BugTest.java.erb'))
       submission = bug.submission @version
       test_class_name = "#{submission.main_class}Test"
       erb = ERB.new(template)

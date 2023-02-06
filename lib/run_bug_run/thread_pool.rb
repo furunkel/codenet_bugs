@@ -1,6 +1,6 @@
 require 'thread'
 
-module CodenetBugs
+module RunBugRun
   class ThreadPool
     def initialize(size: 5)
       @queue = Queue.new

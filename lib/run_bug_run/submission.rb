@@ -1,4 +1,4 @@
-module CodenetBugs
+module RunBugRun
   class Submission
 
     FILENAME_EXTS = {

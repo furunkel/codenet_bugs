@@ -2,7 +2,7 @@
 
 source "https://rubygems.org"
 
-# Specify your gem's dependencies in codenet_bugs.gemspec
+# Specify your gem's dependencies in run_bug_run.gemspec
 gemspec
 
 gem "rake", "~> 13.0"
