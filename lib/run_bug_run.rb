@@ -20,3 +20,6 @@ module RunBugRun
     @logger ||= ::Logger.new($stderr)
   end
 end
+
+require "run_bug_run/bugs"
+require "run_bug_run/dataset"

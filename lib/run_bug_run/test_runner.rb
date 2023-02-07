@@ -8,7 +8,7 @@ require 'run_bug_run/submission_output_matcher'
 
 module RunBugRun
   class TestRunner
-    # largest sample output is 1098
+    # largest test output is 1098
     MAX_OUTPUT_LENGTH = 1024 * 2
     MAX_ERROR_OUTPUT_LENGTH = 1024 * 4
     NO_RLIMIT_LANGUAGES = %i[java javascript go].freeze
@@ -16,12 +16,12 @@ module RunBugRun
 
     DEFAULT_TIMEOUT = 5
 
-    def initialize(submission, io_samples, abort_on_timeout: false, abort_on_fail: false,
+    def initialize(submission, tests, abort_on_timeout: false, abort_on_fail: false,
                   abort_on_error: false, truncate_output: true, logger_level: Logger::WARN, logger: nil)
       @truncate_output = truncate_output
       @submission = submission
       @submission_language = @submission.language.to_sym
-      @io_samples = io_samples
+      @tests = tests
       @abort_on_timeout = abort_on_timeout
       @abort_on_fail = abort_on_fail
       @abort_on_error = abort_on_error
@@ -38,8 +38,8 @@ module RunBugRun
       @counters = {timeout: 0, fail: 0, error: 0}
       @aborted = false
 
-      @logger.debug "Running #{@submission.id} on #{@io_samples.map(&:id)}"
-      return [] if @io_samples.empty?
+      @logger.debug "Running #{@submission.id} on #{@tests.map(&:id)}"
+      return [] if @tests.empty?
       compile_and_run
     end
 
@@ -153,9 +153,9 @@ module RunBugRun
       false
     end
 
-    def run_all_samples(filename, context)
-      @io_samples.each_with_object([]) do |io_sample, results|
-        result = run_sample(filename, context, io_sample)
+    def run_all_tests(filename, context)
+      @tests.each_with_object([]) do |test, results|
+        result = run_test(filename, context, test)
         if result
           result_type = result.fetch(:result)
           results << result
@@ -232,9 +232,9 @@ module RunBugRun
       }
     end
 
-    def run_sample(filename, context, io_sample)
-      sample_input = io_sample.input
-      sample_output = io_sample.output.strip
+    def run_test(filename, context, test)
+      test_input = test.input
+      expected_output = test.output.strip
 
       popen_opts = {
         unsetenv_others: true,
@@ -254,9 +254,9 @@ module RunBugRun
       # Limit causes JVM to crash. We can limit memory using JVM anyway
       popen_opts[:rlimit_as] = 512 * 1024 * 1024 unless NO_RLIMIT_LANGUAGES.include?(@submission_language)
 
-      @logger.debug("Running submission #{@submission.id} on sample #{io_sample.id}")
+      @logger.debug("Running submission #{@submission.id} on test #{test.id}")
 
-      output, error_output, exit_status, epipe = capture3_with_timeout(cmd, env: env, stdin_data: sample_input, **popen_opts)
+      output, error_output, exit_status, epipe = capture3_with_timeout(cmd, env: env, stdin_data: test_input, **popen_opts)
 
       if output == :timeout || error_output == :timeout
         result = :timeout
@@ -276,13 +276,13 @@ module RunBugRun
 
       @logger.debug("Program process exited with status #{exit_status} (output length #{output&.size})")
       if output && @truncate_output
-        output = truncate_output(output, [(1.8 * sample_output.size).to_i, MAX_OUTPUT_LENGTH].max)
+        output = truncate_output(output, [(1.8 * expected_output.size).to_i, MAX_OUTPUT_LENGTH].max)
       end
 
       result ||=
         if exit_status.signaled? || exit_status.termsig
           :error
-        elsif SubmissionOutputMatcher.match?(sample_output, output, @submission.problem_id)
+        elsif SubmissionOutputMatcher.match?(expected_output, output, @submission.problem_id)
           :pass
         elsif exit_status.exitstatus != 0 && error_output
           @logger.error("error output and epipe") if epipe
@@ -311,11 +311,12 @@ module RunBugRun
       end
 
       {
-        result: result,
+        result:,
         submission_id: @submission.id,
-        io_sample_id: io_sample.id,
-        error_output: error_output,
-        output: output
+        test_id: test.id,
+        error_output:,
+        output:,
+        expected_output:
       }
     end
 
@@ -325,7 +326,7 @@ module RunBugRun
           compile do |filename, context|
             @logger.debug "Compiling submission #{@submission.id} done"
             begin
-              run_all_samples(filename, context)
+              run_all_tests(filename, context)
             # rescue Errno::EPIPE, IOError => e
             #   @logger.warn "Received EPIPE/IOError, repeating execution (#{e})"
             #   retry
@@ -335,7 +336,7 @@ module RunBugRun
           [{
             result: :compilation_error,
             submission_id: @submission.id,
-            io_sample_id: @io_samples.first.id,
+            test_id: @tests.first.id,
             error_output: e.message,
             output: nil
           }]

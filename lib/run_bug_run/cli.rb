@@ -24,8 +24,41 @@ module RunBugRun
       # # subcommand "run", Run
 
       def self.exit_on_failure?
-          true
+        true
       end
+
+      desc 'eval', 'evaluate'
+      method_option :prediction_filename, desc: 'prediction files', type: :string
+      method_option :validiation, desc: 'use validation set instead of test set', type: :boolean, default: false
+      method_option :checkpoint, desc: 'continue evaluation from previous (aborted) evaluation', type: :string, default: nil
+      method_option :output_filename, desc: 'output filename', type: :string, required: true, aliases: %w[-o]
+      method_option :version, desc: 'dataset version', type: :string
+      method_option :languages, desc: 'list of languages to evaluate', type: :array, default: RunBugRun::Bugs::ALL_LANGUAGES.map(&:to_s)
+      method_option :split, desc: 'which split to use', type: :string, enum: RunBugRun::Bugs::SPLITS.map(&:to_s)
+      method_option :fixed, desc: 'evaluate the fixed version of the specified bug (as a sanity check)', type: :boolean, default: false
+      method_option :abort_on_error, desc: 'stop execution on first error', type: :boolean, default: true
+      method_option :abort_on_fail, desc: 'stop execution on first failing test', type: :boolean, default: false
+      method_option :abort_on_timeout, desc: 'stop execution after specified number of seconds', type: :numeric, default: 1
+
+      def eval
+        version = options.fetch(:version) { RunBugRun::Dataset.last_version }
+        languages = options.fetch(:languages, RunBugRun::Bugs::ALL_LANGUAGES).map(&:to_sym)
+        unless (languages - RunBugRun::Bugs::ALL_LANGUAGES).empty?
+          p languages
+          raise ArgumentError, "invalid languages: must be subset of #{RunBugRun::Bugs::ALL_LANGUAGES}"
+        end
+        dataset = RunBugRun::Dataset.new(version:)
+        bugs = dataset.load_bugs split: options.fetch(:split, :test).to_sym, languages: languages.map(&:to_sym)
+        tests = dataset.load_tests
+        bugs.evaluate! tests,
+          checkpoint: options.fetch(:checkpoint, nil),
+          output_filename: options.fetch(:output_filename),
+          fixed: options.fetch(:fixed),
+          abort_on_timeout: options.fetch(:abort_on_timeout),
+          abort_on_fail: options.fetch(:abort_on_fail),
+          abort_on_error: options.fetch(:abort_on_error)
+      end
+
 
       desc "junit BUG_IDS", "generate JUnit tests for the specified bugs"
       method_option :o, desc: 'Output directory', type: :string, required: true
@@ -196,38 +229,13 @@ module RunBugRun
         pp result.sort_by { _1 }.to_h
       end
 
-      desc "exec BUG_ID [FILES]", "execute specified bug"
-      method_option :fixed, desc: 'Run the fixed version of the specified bug (as a sanity check)', type: :boolean, default: false
-      def exec(bug_id)
-        bugs = Bugs.load_internal
-        tests = Tests.load_internal
-        bug = bugs[bug_id]
-
-        test_worker_pool = TestWorkerPool.new size: 1
-
-        submission =
-          if options.fetch(:fixed)
-            bug.fixed_submission
-          else
-            bug.buggy_submission
-          end
-
-        abort_on_timeout = 1
-        abort_on_error = nil
-        abort_on_fail = nil
-        
-        submission_tests = tests[bug.problem_id]
-        runs, _worker_info = test_worker_pool.submit(submission, submission_tests,
-                                       abort_on_timeout: abort_on_timeout,
-                                       abort_on_error: abort_on_error,
-                                       abort_on_fail: abort_on_fail)
-
-        pp runs
-      end
-
       require 'run_bug_run/cli/dataset'
       desc "dataset", "Download and manage dataset versions"
       subcommand "dataset", CLI::Dataset
+
+      require 'run_bug_run/cli/bugs'
+      desc 'bugs', "Get information on bugs"
+      subcommand "bugs", CLI::Bugs
     end
   end
 

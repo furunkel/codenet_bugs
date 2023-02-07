@@ -15,11 +15,6 @@ module RunBugRun
     end
 
     class << self
-      def load_internal(version: RunBugRun::Dataset.last_version)
-        filename = File.join(RunBugRun.data_dir, 'export', version, 'export_tests_all.jsonl.gz')
-        load(filename)
-      end
-
       def load(filename)
         tests = Hash.new { |h, k| h[k] = [] }
         JSONUtils.load_file(filename).each do |hash|

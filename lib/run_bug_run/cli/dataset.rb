@@ -3,9 +3,14 @@ require 'run_bug_run/dataset'
 module RunBugRun
   module CLI
     class Dataset < SubCommand
-      desc "version", "show current dataset version"
-      def create
-        # create
+      desc "version", "show current version"
+      def version
+        puts JSON.pretty_generate(RunBugRun::Dataset.last_version)
+      end
+
+      desc "versions", "list all versions"
+      def versions
+        puts JSON.pretty_generate(RunBugRun::Dataset.versions)
       end
 
       desc "download", "Download dataset at specific version"

@@ -9,14 +9,57 @@ module RunBugRun
     #DEFAULT_BASE_URL = 'https://github.com/gigianticode/run_bug_run/%{version}/%{filename}'.freeze
     DEFAULT_BASE_URL = 'https://github.com/furunkel/run_bug_run_data/releases/download/v%{version}/%{filename}'.freeze
     MANIFEST_FILENAME = 'Manifest.json.gz'.freeze
+    INDEX_FILENAME = 'Index.json.gz'.freeze
+
+    attr_reader :version
+
+    def initialize(version: self.class.last_version)
+      @version = version
+    end
+
+    def load_bugs(split: nil, languages: RunBugRun::Bugs::ALL_LANGUAGES)
+      raise ArgumentError, "invalid split '#{split}'" unless split.nil? || RunBugRun::Bugs::SPLITS.include?(split)
+      files = manifest.fetch(:files).select do |file|
+        file[:type] == 'bugs' &&
+        (split.nil? || file[:split].to_sym == split) &&
+        languages.include?(file[:language].to_sym)
+      end
+      filenames = files.map { File.join(data_dir, _1.fetch(:filename)) }
+      RunBugRun::Bugs.load(filenames)
+    end
+
+    def load_tests
+      filename = File.join(data_dir, 'tests_all.jsonl.gz')
+      RunBugRun::Tests.load(filename)
+    end
+
+    def find_filename_by_id(type, id)
+      files = manifest.fetch(:files).select do
+        _1[:type].to_sym == type
+      end
+      file = find_file_by_id(files, id)
+      File.join(data_dir, file.fetch(:filename))
+    end
+
+    def data_dir
+      File.join(self.class.versions_dir, @version)
+    end
+
+    def manifest
+      @manifest ||= JSONUtils.load_file(File.join(data_dir, MANIFEST_FILENAME))
+    end
+
+    def index
+      @index ||= JSONUtils.load_file(File.join(data_dir, INDEX_FILENAME), symbolize_names: false)
+    end
 
     class << self
       def last_version
-        Dir[versions_dir].max_by {  Gem::Version.new(_1) }
+        versions.max_by {  Gem::Version.new(_1) }
       end
 
       def versions
-        Dir[versions_dir].max_by {  Gem::Version.new(_1) }
+        Dir[File.join(versions_dir, '*')].map { File.basename(_1) }
       end
 
       def versions_dir
@@ -28,13 +71,8 @@ module RunBugRun
         manifest_io.rewind
         manifest = JSONUtils.load_json(manifest_io, compression: :gzip)
 
-        pp manifest
-
-        bugs = manifest.fetch(:bugs)
-        tests = manifest.fetch(:tests)
-        total_bytes = 0
-        total_bytes += bugs.sum { _1.fetch(:bytes) }
-        total_bytes += tests.sum { _1.fetch(:bytes) }
+        files = manifest.fetch(:files)
+        total_bytes = files.sum { _1.fetch(:bytes) }
 
         progress_bar = ProgressBar.create(total: total_bytes)
 
@@ -43,13 +81,17 @@ module RunBugRun
           progress_bar.progress = downloaded_bytes + progress
         end
 
-        (bugs + tests).each do |file|
-          language = file[:language]
+        files.each do |file|
           progress_bar.title =
-            if language
-              "Downloading #{Bugs::LANGUAGE_NAME_MAP[language.to_sym]}"
+            case file[:type]
+            when 'bugs'
+              "Downloading #{Bugs::LANGUAGE_NAME_MAP[file[:language].to_sym]} bugs"
+            when 'tests'
+              'Downloading tests'
+            when 'index'
+              'Downloading index'
             else
-              "Downlaoding tests"
+              '???'
             end
 
           download_file(file.fetch(:filename), manifest.fetch(:version), force:, base_url:, progress_proc:, md5: file.fetch(:md5))
@@ -91,5 +133,17 @@ module RunBugRun
         download
       end
     end
+
+    private
+
+    def find_file_by_id(files, id)
+      id = Integer(id)
+
+      files.find do |file|
+        filename = file.fetch(:filename)
+        index['ids'][filename].include? id
+      end
+    end
+
   end
 end

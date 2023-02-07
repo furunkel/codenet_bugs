@@ -51,7 +51,7 @@ module RunBugRun
       @bugs.keys
     end
 
-    def evaluate!(tests, output_filename:, sanity_check: false, abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, checkpoint: nil)
+    def evaluate!(tests, output_filename:, fixed: false, abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, checkpoint: nil)
       restart = false
       if checkpoint
         all_rows = JSON.load_file(checkpoint, symbolize_names: true).transform_keys(&:to_i)
@@ -66,7 +66,7 @@ module RunBugRun
         (all_rows.size + bug_index.to_f + 0.5) / @bugs.size
       end
 
-      eval_rows = evaluate_bugs(bugs, tests, sanity_check:, abort_on_timeout:, abort_on_fail:, abort_on_error:, progress_proc:)
+      eval_rows = evaluate_bugs(bugs, tests, fixed:, abort_on_timeout:, abort_on_fail:, abort_on_error:, progress_proc:)
 
       all_rows.merge! eval_rows
 
@@ -84,7 +84,7 @@ module RunBugRun
 
     private
 
-    def evaluate_bugs(bugs, tests, sanity_check: , abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, progress_proc: nil)
+    def evaluate_bugs(bugs, tests, fixed: , abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, progress_proc: nil)
       test_worker_pool = TestWorkerPool.new logger: @logger, size: 8
       eval_rows = {}
       eval_rows_mutex = Mutex.new
@@ -92,15 +92,15 @@ module RunBugRun
 
       bugs.each_with_index do |(bug_id, bug), bug_index|
         pool.post do
-          io_samples = tests[bug.problem_id]
+          problem_tests = tests[bug.problem_id]
           progress = progress_proc&.call bug_index
           #p bug.buggy_submission.accepted?
           #p bug.fixed_submission.accepted?
 
           begin
             rows =
-              if sanity_check
-                runs, worker_info = test_worker_pool.submit(bug.fixed_submission, io_samples,
+              if fixed
+                runs, worker_info = test_worker_pool.submit(bug.fixed_submission, problem_tests,
                                               abort_on_timeout: abort_on_timeout,
                                               abort_on_error: abort_on_error,
                                               abort_on_fail: abort_on_fail)
@@ -111,7 +111,7 @@ module RunBugRun
                 []
               else
                 bug.candidate_submissions.inject([]) do |acc, candidate_submission|
-                  runs, worker_info = test_worker_pool.submit(candidate_submission, io_samples,
+                  runs, worker_info = test_worker_pool.submit(candidate_submission, problem_tests,
                                                     abort_on_timeout: abort_on_timeout,
                                                     abort_on_error: abort_on_error,
                                                     abort_on_fail: abort_on_fail)
@@ -128,7 +128,7 @@ module RunBugRun
             max_run = rows.max_by { |runs| runs.count { _1.fetch(:result) == 'pass' }}
             if max_run
               passed = max_run.all? { _1.fetch(:result) == 'pass' }
-              @logger.info("[#{(progress * 100).round}%] [Worker#{worker_info[:worker_id]}] Bug #{bug.id} (#{bug.language}): #{passed} #{max_run ? max_run.size : 0}/#{io_samples.size}")
+              @logger.info("[#{(progress * 100).round}%] [Worker#{worker_info[:worker_id]}] Bug #{bug.id} (#{bug.language}): #{passed} #{max_run ? max_run.size : 0}/#{problem_tests.size}")
             else
               @logger.info("[#{(progress * 100).round}%] Bug #{bug.id} (#{bug.language}): no prediction found")
             end
@@ -146,17 +146,10 @@ module RunBugRun
     end
 
     class << self
-      def load_internal(split = nil,  preds_filename = nil, version: RunBugRun::Dataset.last_version, languages: ALL_LANGUAGES)
-        raise ArgumentError, "invalid split '#{split}'" unless split.nil? || SPLITS.include?(split)
-
-        filenames = Dir[File.join(RunBugRun.data_dir, 'export', version, "*_{#{Array(languages).join(',')}}_#{split}*.jsonl.gz")]
-        load(filenames, preds_filename)
-      end
-
       def load(filenames, preds_filename = nil)
         filenames = Array(filenames)
         languages = filenames.map do |filename|
-          if (match = filename.match(/_(c|cpp|javascript|java|ruby|python|php|go)_/))
+          if (match = filename.match(/(c|cpp|javascript|java|ruby|python|php|go)_/))
             match[1].to_sym
           else
             raise ArgumentError, "invalid submissions filename '#{filename}'"

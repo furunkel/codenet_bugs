@@ -130,9 +130,9 @@ module RunBugRun
       ruby_prefix = RbConfig::CONFIG['prefix']
       rubylib = ($LOAD_PATH + [File.join(RunBugRun.root, 'lib')]).map { to_sandbox_path(_1) }.join(':')
 
-      p ruby_path
-      p [ruby_prefix, to_sandbox_path(ruby_prefix)]
-      p [rubylib]
+      # p ruby_path
+      # p [ruby_prefix, to_sandbox_path(ruby_prefix)]
+      # p [rubylib]
 
       cmd = [
         'bwrap',

@@ -46,13 +46,13 @@ module RunBugRun
         @logger.debug("Read: #{input.inspect}")
 
         submission = Submission.from_hash(input[0])
-        io_samples = input[1].map { Test.from_hash _1 }
+        tests = input[1].map { Test.from_hash _1 }
         options = input[2] #.transform_keys(&:to_sym)
 
-        @logger.debug("Running submisison #{submission} on #{io_samples.map(&:id)}")
+        @logger.debug("Running submisison #{submission} on #{tests.map(&:id)}")
 
         s = Time.now
-        runner = TestRunner.new(submission, io_samples, logger: @logger, **options)
+        runner = TestRunner.new(submission, tests, logger: @logger, **options)
         results = runner.run!
         @logger.debug("running took #{Time.now - s} seconds")
 
