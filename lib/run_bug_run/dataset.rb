@@ -19,13 +19,13 @@ module RunBugRun
 
     def load_bugs(split: nil, languages: RunBugRun::Bugs::ALL_LANGUAGES)
       raise ArgumentError, "invalid split '#{split}'" unless split.nil? || RunBugRun::Bugs::SPLITS.include?(split)
-      files = manifest.fetch(:files).select do |file|
+      files = self.files.select do |file|
         file[:type] == 'bugs' &&
         (split.nil? || file[:split].to_sym == split) &&
         languages.include?(file[:language].to_sym)
       end
       filenames = files.map { File.join(data_dir, _1.fetch(:filename)) }
-      RunBugRun::Bugs.load(filenames)
+      RunBugRun::Bugs.load(filenames, split:, languages:, version:)
     end
 
     def load_tests
@@ -33,11 +33,25 @@ module RunBugRun
       RunBugRun::Tests.load(filename)
     end
 
+    def stats
+      files.filter { _1[:type] == 'bugs' }.group_by { _1[:split] }.map do |split, files|
+        by_language = files.group_by { _1[:language] }.transform_values { _1.sum { |f| f[:size] } }
+        [
+          split, {
+            by_language: by_language,
+            total: by_language.values.sum
+          }
+        ]
+      end.to_h
+    end
+
     def find_filename_by_id(type, id)
-      files = manifest.fetch(:files).select do
+      files = self.files.select do
         _1[:type].to_sym == type
       end
       file = find_file_by_id(files, id)
+      return nil if file.nil?
+
       File.join(data_dir, file.fetch(:filename))
     end
 
@@ -46,7 +60,8 @@ module RunBugRun
     end
 
     def manifest
-      @manifest ||= JSONUtils.load_file(File.join(data_dir, MANIFEST_FILENAME))
+      manifest_filename = File.join(data_dir, MANIFEST_FILENAME)
+      @manifest ||= JSONUtils.load_file(manifest_filename)
     end
 
     def index
@@ -78,7 +93,7 @@ module RunBugRun
 
         downloaded_bytes = 0
         progress_proc = lambda do |progress|
-          progress_bar.progress = downloaded_bytes + progress
+          progress_bar.progress = [downloaded_bytes + progress, total_bytes].min
         end
 
         files.each do |file|
@@ -94,7 +109,7 @@ module RunBugRun
               '???'
             end
 
-          download_file(file.fetch(:filename), manifest.fetch(:version), force:, base_url:, progress_proc:, md5: file.fetch(:md5))
+          download_file(file.fetch(:filename), version, force:, base_url:, progress_proc:, md5: file.fetch(:md5))
           downloaded_bytes += file.fetch(:bytes)
         end
       ensure
@@ -135,6 +150,10 @@ module RunBugRun
     end
 
     private
+
+    def files
+      manifest.fetch(:files)
+    end
 
     def find_file_by_id(files, id)
       id = Integer(id)

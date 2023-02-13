@@ -26,22 +26,27 @@ module RunBugRun
       go: 'Go'
     }.freeze
 
+    attr_reader :split, :languages, :version
+
     def each(...) = @bugs.each_value(...)
 
-    def initialize(bugs, logger_level: Logger::INFO, logger: nil)
+    def initialize(bugs, logger_level: Logger::INFO, logger: nil, split: nil, languages: nil, version: nil)
       @bugs = bugs
       @logger = Logger.new || logger
       @logger.level = logger_level
+      @split = split
+      @languages = languages
+      @version = version
     end
 
     def size = @bugs.size
     def values_at(...) = @bugs.values_at(...)
 
-    def restart!(checkpoint)
-      @logger.warn "Restarting process..."
-      sleep 60 * 10
-      Kernel.exec("bundle exec #{$0} #{ARGV.join ' '} --checkpoint #{checkpoint}")
-    end
+    # def restart!(checkpoint)
+    #   @logger.warn "Restarting process..."
+    #   sleep 60 * 10
+    #   Kernel.exec("bundle exec #{$0} #{ARGV.join ' '} --checkpoint #{checkpoint}")
+    # end
 
     def [](bug_id)
       @bugs[bug_id.to_i]
@@ -51,10 +56,10 @@ module RunBugRun
       @bugs.keys
     end
 
-    def evaluate!(tests, output_filename:, fixed: false, abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, checkpoint: nil)
-      restart = false
+    def evaluate!(tests, output_filename:, fixed: false, buggy: false, abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, checkpoint: nil, workers: 8)
       if checkpoint
-        all_rows = JSON.load_file(checkpoint, symbolize_names: true).transform_keys(&:to_i)
+        all_rows = JSONUtils.load_json(checkpoint, compression: :gzip)
+        all_rows.transform_keys!(&:to_i)
         bugs = @bugs.reject { |bug_id, _bug| all_rows.key? bug_id }
         @logger.info "Continuing evaluation from checkpoint, #{@bugs.size - bugs.size} bugs already evaluated"
       else
@@ -66,16 +71,31 @@ module RunBugRun
         (all_rows.size + bug_index.to_f + 0.5) / @bugs.size
       end
 
-      eval_rows = evaluate_bugs(bugs, tests, fixed:, abort_on_timeout:, abort_on_fail:, abort_on_error:, progress_proc:)
-
+      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      eval_rows = evaluate_bugs(bugs, tests, fixed:, buggy:, abort_on_timeout:, abort_on_fail:, abort_on_error:, progress_proc:, workers:)
+      end_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       all_rows.merge! eval_rows
+    ensure
+      passing_rows = all_rows.select do |_bug_id, candidate_runs|
+        candidate_runs.any? {|runs| runs.all? { _1.fetch(:result) == 'pass' } }
+      end
+      print_short_summary passing_rows, all_rows, output_filename, start_time, end_time
+      passing_ids = passing_rows.map(&:first)
 
-      checkpoint = "/tmp/run_bug_run_checkpoint_#{Time.now.to_i}.json"
-      output = all_rows.to_h.to_json
-      File.write(checkpoint, output)
-      File.write(output_filename, output) if output_filename
-      @logger.info "Writing checkpoint to #{checkpoint}"
-      restart! checkpoint if restart
+      json = {
+        results: all_rows,
+        split: @split,
+        languages: @languages,
+        version: @version
+      }
+
+      if passing_rows.size < all_rows.size / 2
+        json[:passing] = passing_ids
+      else
+        json[:failing] = all_rows.keys - passing_ids
+      end
+
+      JSONUtils.write_json output_filename, json, compression: :gzip
     end
 
     def inspect
@@ -84,23 +104,57 @@ module RunBugRun
 
     private
 
-    def evaluate_bugs(bugs, tests, fixed: , abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, progress_proc: nil)
-      test_worker_pool = TestWorkerPool.new logger: @logger, size: 8
+    module Emojis
+      CHECK = "\u{2705}".freeze
+      SKULL = "\u{1F480}".freeze
+      RED_CROSS = "\u{274C}".freeze
+      STOP_WATCH = "\u{23F1}".freeze
+      QUESTION_MARK = "\u{003F}".freeze
+    end
+
+    RESULT_EMOJIS = {
+      pass: Emojis::CHECK,
+      fail: Emojis::RED_CROSS,
+      error: Emojis::SKULL,
+      timeout: Emojis::STOP_WATCH
+    }.tap { _1.default = Emojis::QUESTION_MARK }.freeze
+
+    def print_short_summary(passing_rows, all_rows, output_filename, start_time, end_time)
+      elapsed_time = (end_time - start_time).to_f
+      bug_count = all_rows.size
+      submission_count = all_rows.values.flatten(1).size
+      run_count = all_rows.values.flatten(2).size
+      bugs_per_s = (bug_count / elapsed_time).round(2)
+      submissions_per_s = (submission_count / elapsed_time).round(2)
+      runs_per_s = (run_count / elapsed_time).round(2)
+
+      puts "#{passing_rows.size}/#{all_rows.size} passed (#{(passing_rows.size / all_rows.size.to_f * 100.0).round(2)}%)"
+      puts "Evaluated #{bug_count} bugs (#{bugs_per_s}/s), #{submission_count} submissions (#{submissions_per_s}/s), #{run_count} runs (#{runs_per_s}/s) in #{seconds_to_time_str elapsed_time} seconds"
+      puts "Evaluation results written to #{output_filename}"
+      puts "Use `rbugr analyze #{output_filename}` to analyze performance"
+    end
+
+
+    def seconds_to_time_str(seconds)
+      format('%02d:%02d:%02d', seconds / 3600, (seconds / 60) % 60, seconds % 60)
+    end
+
+    def evaluate_bugs(bugs, tests, fixed:, buggy:, abort_on_timeout: 1, abort_on_fail:1, abort_on_error: 1, progress_proc: nil, workers:)
+      test_worker_pool = TestWorkerPool.new logger: @logger, size: workers
       eval_rows = {}
       eval_rows_mutex = Mutex.new
-      pool = ThreadPool.new size: 8
+      pool = ThreadPool.new size: workers
 
       bugs.each_with_index do |(bug_id, bug), bug_index|
         pool.post do
           problem_tests = tests[bug.problem_id]
           progress = progress_proc&.call bug_index
-          #p bug.buggy_submission.accepted?
-          #p bug.fixed_submission.accepted?
 
           begin
             rows =
-              if fixed
-                runs, worker_info = test_worker_pool.submit(bug.fixed_submission, problem_tests,
+              if fixed || buggy
+                submission = fixed ? bug.fixed_submission : bug.buggy_submission
+                runs, worker_info = test_worker_pool.submit(submission, problem_tests,
                                               abort_on_timeout: abort_on_timeout,
                                               abort_on_error: abort_on_error,
                                               abort_on_fail: abort_on_fail)
@@ -120,17 +174,18 @@ module RunBugRun
                   acc
                 end
               end
-            #rows = IOSampleRunner.new(bug.buggy_submission, io_samples, abort_on_timeout: abort_on_timeout).run!
-            #rows2 = IOSampleRunner.new(bug.fixed_submission, io_samples, abort_on_timeout: abort_on_timeout).run!
             eval_rows_mutex.synchronize do
               eval_rows[bug.id] = rows if rows
             end
             max_run = rows.max_by { |runs| runs.count { _1.fetch(:result) == 'pass' }}
+            language = Bugs::LANGUAGE_NAME_MAP.fetch(bug.language)
+            progress_str = format('[%2d%%]', (progress * 100).round)
             if max_run
-              passed = max_run.all? { _1.fetch(:result) == 'pass' }
-              @logger.info("[#{(progress * 100).round}%] [Worker#{worker_info[:worker_id]}] Bug #{bug.id} (#{bug.language}): #{passed} #{max_run ? max_run.size : 0}/#{problem_tests.size}")
+              # passed = max_run.all? { _1.fetch(:result) == 'pass' }
+              emoji_str = max_run.map { RESULT_EMOJIS[_1.fetch(:result).to_sym] }.tally.map { format("%3d\u{00d7}%s", _2, _1) }.join(' ')
+              @logger.info("#{progress_str} [Worker#{worker_info[:worker_id]}] Bug #{format('%6d', bug.id)} (#{language}): #{emoji_str} #{max_run.size}/#{problem_tests.size}")
             else
-              @logger.info("[#{(progress * 100).round}%] Bug #{bug.id} (#{bug.language}): no prediction found")
+              @logger.info("#{progress_str} Bug #{format('%5d', bug.id)} (#{language}): no prediction found")
             end
           rescue TestRunner::BWrapError => e
             @logger.error e
@@ -146,7 +201,7 @@ module RunBugRun
     end
 
     class << self
-      def load(filenames, preds_filename = nil)
+      def load(filenames, preds_filename = nil, split: nil, languages: nil, version: nil)
         filenames = Array(filenames)
         languages = filenames.map do |filename|
           if (match = filename.match(/(c|cpp|javascript|java|ruby|python|php|go)_/))
@@ -222,7 +277,7 @@ module RunBugRun
           end
         end
 
-        new bugs, logger: logger
+        new bugs, logger: logger, split:, languages:, version:
       end
 
       private :new

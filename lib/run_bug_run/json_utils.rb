@@ -6,7 +6,6 @@ module JSONUtils
   def decompress(io, compression, &block)
     case compression
     when :gzip
-      io.rewind
       Zlib::GzipReader.wrap(io, &block)
     when :none
       block[io]
@@ -46,18 +45,29 @@ module JSONUtils
     end
   end
 
-  def load_internal(*path_parts, symbolize_names: true)
-    full_filename = File.join(RunBugRun.data_dir, *path_parts)
-    load_file(full_filename, symbolize_names:)
-  end
-
-  def write_jsonl(filename, rows)
-    open(filename) do |io|
-      rows.each do |row|
-        io.puts(JSON.fast_generate(rows))
+  def write_jsonl(filename, rows, compression: :gzip)
+    case compression
+    when :gzip
+      Zlib::GzipWriter.open(filename) do |gz|
+        rows.each do |row|
+          gz.puts(JSON.fast_generate(row))
+        end
       end
+    else
+      raise ArgumentError, "unsupported compression '#{compression}"
     end
   end
 
-  module_function :load_file, :write_jsonl, :load_json, :load_jsonl, :decompress, :load_internal
+  def write_json(filename, object, compression: :gzip)
+    case compression
+    when :gzip
+      Zlib::GzipWriter.open(filename) do |gz|
+        gz.write(JSON.fast_generate(object))
+      end
+    else
+      raise ArgumentError, "unsupported compression '#{compression}"
+    end
+  end
+
+  module_function :load_file, :write_jsonl, :write_json, :load_json, :load_jsonl, :decompress
 end

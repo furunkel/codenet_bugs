@@ -296,18 +296,9 @@ module RunBugRun
         error_output = truncate_output(error_output.gsub('/tmp/', ''), MAX_ERROR_OUTPUT_LENGTH)
       end
 
-      icon =
-        case result
-        when :pass then "\u{2705}"
-        when :fail then "\u{274C}"
-        when :error then "\u{1F480}"
-        when :timeout then "\u{23F1}"
-        else "\u{003F}"
-        end
-
       if (@submission.accepted? && result != :pass) ||
           (!@submission.accepted? && result == :pass)
-        @logger.debug("Run result does not match submission status: #{@submission.id} #{icon}")
+        @logger.debug("Run result does not match submission status: #{@submission.id} #{result}")
       end
 
       {
@@ -316,7 +307,7 @@ module RunBugRun
         test_id: test.id,
         error_output:,
         output:,
-        expected_output:
+        expected_output:,
       }
     end
 

@@ -7,7 +7,7 @@ module RunBugRun
   module CLI
 
     class SubCommand < Thor
-      def self.banner(command, namespace = nil, subcommand = false)
+      def self.banner(command, _namespace = nil, _subcommand = false)
         "#{basename} #{subcommand_prefix} #{command.usage}"
       end
 
@@ -17,34 +17,27 @@ module RunBugRun
     end
     
     class Main < Thor
-      # desc "eval", "create and publish docs"
-      # subcommand "eval", Eval
-
-      # desc "run", "create and publish docs"
-      # # subcommand "run", Run
 
       def self.exit_on_failure?
         true
       end
 
-      desc 'eval', 'evaluate'
-      method_option :prediction_filename, desc: 'prediction files', type: :string
-      method_option :validiation, desc: 'use validation set instead of test set', type: :boolean, default: false
+      desc 'eval [FILENAME]', 'evaluate candidate fixes stored in FILENAME'
       method_option :checkpoint, desc: 'continue evaluation from previous (aborted) evaluation', type: :string, default: nil
       method_option :output_filename, desc: 'output filename', type: :string, required: true, aliases: %w[-o]
-      method_option :version, desc: 'dataset version', type: :string
-      method_option :languages, desc: 'list of languages to evaluate', type: :array, default: RunBugRun::Bugs::ALL_LANGUAGES.map(&:to_s)
-      method_option :split, desc: 'which split to use', type: :string, enum: RunBugRun::Bugs::SPLITS.map(&:to_s)
+      method_option :version, desc: 'dataset version (defaults to most recent installed version)', type: :string
+      method_option :languages, desc: 'languages to evaluate (defaults to all)', type: :array, default: RunBugRun::Bugs::ALL_LANGUAGES.map(&:to_s)
+      method_option :split, desc: 'split to evaluate (defaults to the test set)', type: :string, enum: RunBugRun::Bugs::SPLITS.map(&:to_s)
       method_option :fixed, desc: 'evaluate the fixed version of the specified bug (as a sanity check)', type: :boolean, default: false
+      method_option :buggy, desc: 'evaluate the buggy version of the specified bug', type: :boolean, default: false
       method_option :abort_on_error, desc: 'stop execution on first error', type: :boolean, default: true
       method_option :abort_on_fail, desc: 'stop execution on first failing test', type: :boolean, default: false
       method_option :abort_on_timeout, desc: 'stop execution after specified number of seconds', type: :numeric, default: 1
-
-      def eval
+      method_option :workers, desc: 'number of workers to use for evaluation', type: :numeric, default: 8
+      def eval(filename=nil)
         version = options.fetch(:version) { RunBugRun::Dataset.last_version }
         languages = options.fetch(:languages, RunBugRun::Bugs::ALL_LANGUAGES).map(&:to_sym)
         unless (languages - RunBugRun::Bugs::ALL_LANGUAGES).empty?
-          p languages
           raise ArgumentError, "invalid languages: must be subset of #{RunBugRun::Bugs::ALL_LANGUAGES}"
         end
         dataset = RunBugRun::Dataset.new(version:)
@@ -54,6 +47,7 @@ module RunBugRun
           checkpoint: options.fetch(:checkpoint, nil),
           output_filename: options.fetch(:output_filename),
           fixed: options.fetch(:fixed),
+          buggy: options.fetch(:buggy),
           abort_on_timeout: options.fetch(:abort_on_timeout),
           abort_on_fail: options.fetch(:abort_on_fail),
           abort_on_error: options.fetch(:abort_on_error)
@@ -85,7 +79,7 @@ module RunBugRun
         generator.generate!
       end
 
-      desc "label_stats OUTPUT_FILE", "analyze output file"
+      desc 'label_stats OUTPUT_FILE', 'analyze output file'
       def label_stats(output_filename)
         runs = JSON.load_file!(output_filename)
         ids = runs.keys
@@ -122,30 +116,54 @@ module RunBugRun
           if options[:only_passing]
             [runs, []]
           else
-            runs.partition { |_bug_id, pred_runs| pred_runs.any?{ |pr| pr.all? { _1['result'] == 'pass'}}}
+            runs.partition { |_bug_id, pred_runs| pred_runs.any?{ |pr| pr.all? { _1.fetch('result') == 'pass'}}}
           end
         end
       end
 
-      desc "analyze OUTPUT_FILE", "analyze evaluation results"
+      desc 'failing OUTPUT_FILE', 'show ids of failing bugs'
+      def failing(output_filename)
+        eval_output = JSONUtils.load_file output_filename
+        results = eval_output[:results]
+
+        failing = results.select do |_bug_id, candidate_runs|
+          candidate_runs.any? {|runs| runs.any? { _1.fetch(:result) != 'pass' } }
+        end
+
+        puts JSON.pretty_generate(failing)
+      end
+
+      desc 'passing OUTPUT_FILE', 'show ids of passing bugs'
+      def passing(output_filename)
+        eval_output = JSONUtils.load_file output_filename
+        results = eval_output[:results]
+
+        passing = results.select do |_bug_id, candidate_runs|
+          candidate_runs.any? {|runs| runs.all? { _1.fetch(:result) == 'pass' } }
+        end
+
+        puts JSON.pretty_generate(passing)
+      end
+
+      desc 'analyze OUTPUT_FILE', 'analyze evaluation results'
       method_option :by_language, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_change_count, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_label, desc: 'Analyze per label', type: :boolean, default: false
       method_option :only_passing, desc: 'The file to analyze contains passing bugs only', type: :boolean, default: false
-      method_option :language, desc: 'Restrict to a single language only', type: :string
       def analyze(output_filename)
-        runs = JSON.load_file output_filename
+        output = JSONUtils.load_file output_filename, symbolize_names: false
+        version = output.fetch('version')
+        languages = output.fetch('languages').map(&:to_sym)
+        dataset = RunBugRun::Dataset.new(version:)
+        bugs = dataset.load_bugs(split: output.fetch('split').to_sym, languages:)
 
+        runs = output.fetch('results')
         valid_bugs, _failing_bugs = partition_runs(runs, options)
-
-        bugs = Bugs.load_internal :test, languages: Array(options.fetch(:language, Bugs::ALL_LANGUAGES))
-
-        p "#{bugs.size}/#{runs.size}"
 
         run_count = (options[:only_passing] ? bugs : runs).size.to_f
 
         result = {
-          plausibility_rate: (valid_bugs.size / run_count).round(4)
+          plausibility_rate: (valid_bugs.size / run_count).round(4),
         }
 
         if options.fetch(:by_label)
@@ -186,11 +204,14 @@ module RunBugRun
             ]
           end
 
-          p scores.sort_by{ [-_2[0], -_2[-1]] }.take(15)
-          p scores.sort_by{ [_2[0], -_2[-1]] }.take(15)
+          best_labels = scores.sort_by{ [-_2[0], -_2[-1]] }.take(15).to_h
+          worst_labels = scores.sort_by{ [_2[0], -_2[-1]] }.take(15).to_h
+
+          result[:best_labels] = best_labels
+          result[:wort_labels] = worst_labels
         end
 
-        if options.fetch(:by_language) && !options[:language] && !options[:only_passing]
+        if options.fetch(:by_language) && !options[:only_passing]
           runs.group_by { |bug_id, _pred_runs| bugs[bug_id]&.language }.each do |language, runs|
             # valid_bugs, _failing_bugs = runs.partition { |_bug_id, pred_runs|  pred_runs.any?{ |pr| pr.all? { _1['result'] == 'pass'}}}
             valid_bugs, _failing_bugs = partition_runs(runs, options)
@@ -201,8 +222,6 @@ module RunBugRun
         if options.fetch(:by_change_count)
           runs.group_by { |bug_id, _pred_runs| bugs[bug_id]&.change_count }.each do |change_count, runs|
             valid_bugs, _failing_bugs = partition_runs(runs, options)
-
-            p [change_count, runs.size]
 
             z = 
               if options[:only_passing]
@@ -216,7 +235,7 @@ module RunBugRun
 
           runs.group_by { |bug_id, _pred_runs| bugs[bug_id]&.line_hunks&.then{ _1 ? _1 : 'other' } }.each do |change_count, runs|
             valid_bugs, _failing_bugs = partition_runs(runs, options)
-            z = 
+            z =
               if options[:only_passing]
                 bugs.count { |bug| bug.change_count == change_count }.to_f
               else
@@ -226,7 +245,7 @@ module RunBugRun
           end
         end
 
-        pp result.sort_by { _1 }.to_h
+        puts JSON.pretty_generate(result.sort.to_h)
       end
 
       require 'run_bug_run/cli/dataset'
@@ -238,15 +257,4 @@ module RunBugRun
       subcommand "bugs", CLI::Bugs
     end
   end
-
-  # class SubCommand < Thor
-  #   def self.banner(command, namespace = nil, subcommand = false)
-  #     "#{basename} #{subcommand_prefix} #{command.usage}"
-  #   end
-
-  #   def self.subcommand_prefix
-  #     self.name.gsub(%r{.*::}, '').gsub(%r{^[A-Z]}) { |match| match[0].downcase }.gsub(%r{[A-Z]}) { |match| "-#{match[0].downcase}" }
-  #   end
-  # end
-
 end
