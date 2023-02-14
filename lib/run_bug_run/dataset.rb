@@ -25,7 +25,7 @@ module RunBugRun
         languages.include?(file[:language].to_sym)
       end
       filenames = files.map { File.join(data_dir, _1.fetch(:filename)) }
-      RunBugRun::Bugs.load(filenames, split:, languages:, version:)
+      RunBugRun::Bugs.load(filenames)
     end
 
     def load_tests

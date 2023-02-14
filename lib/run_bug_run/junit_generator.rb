@@ -3,11 +3,11 @@ require 'run_bug_run'
 
 module RunBugRun
   class JUnitGenerator
-    def initialize(bugs, tests, output_dir:, version:)
+    def initialize(bugs, tests, output_dir:, fixed: false)
       @bugs = bugs
       @output_dir = output_dir
       @tests = tests
-      @version = version
+      @fixed = fixed
     end
 
     def generate!
@@ -34,7 +34,7 @@ module RunBugRun
     def generate_bug(bug, tests)
       package_name = "run_bug_run_#{bug.id}"
       template = File.read(File.join(RunBugRun.data_dir, 'templates', 'BugTest.java.erb'))
-      submission = bug.submission @version
+      submission = bug.submission @fixed ? :fixed : :buggy
       test_class_name = "#{submission.main_class}Test"
       erb = ERB.new(template)
 

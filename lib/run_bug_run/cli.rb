@@ -2,6 +2,7 @@ require 'thor'
 require 'pp'
 require 'run_bug_run/bugs'
 require 'run_bug_run/tests'
+require 'run_bug_run/candidate_submissions'
 
 module RunBugRun
   module CLI
@@ -22,6 +23,34 @@ module RunBugRun
         true
       end
 
+      no_commands do
+        def seconds_to_time_str(seconds)
+          format('%02d:%02d:%02d', seconds / 3600, (seconds / 60) % 60, seconds % 60)
+        end
+
+        def print_eval_summary(all_rows, output_filename, start_time, end_time)
+          elapsed_time = (end_time - start_time).to_f
+          passing_rows = all_rows.select do |_bug_id, candidate_runs|
+            candidate_runs.any? { |runs| runs.all? { _1.fetch(:result) == 'pass' } }
+          end
+          bug_count = all_rows.size
+          submission_count = all_rows.values.flatten(1).size
+          run_count = all_rows.values.flatten(2).size
+          bugs_per_s = (bug_count / elapsed_time).round(2)
+          submissions_per_s = (submission_count / elapsed_time).round(2)
+          runs_per_s = (run_count / elapsed_time).round(2)
+
+          # Write to stderr, as we normally output JSON to stdout
+          # for consistency ?
+          RunBugRun.logger.then do |l|
+            l.info "#{passing_rows.size}/#{all_rows.size} passed (#{(passing_rows.size / all_rows.size.to_f * 100.0).round(2)}%)"
+            l.info "Evaluated #{bug_count} bugs (#{bugs_per_s}/s), #{submission_count} submissions (#{submissions_per_s}/s), #{run_count} runs (#{runs_per_s}/s) in #{seconds_to_time_str elapsed_time} seconds"
+            l.info "Evaluation results written to #{output_filename}"
+            l.info "Use `rbugr analyze #{output_filename}` to analyze performance"
+          end
+        end
+      end
+
       desc 'eval [FILENAME]', 'evaluate candidate fixes stored in FILENAME'
       method_option :checkpoint, desc: 'continue evaluation from previous (aborted) evaluation', type: :string,
                                  default: nil
@@ -39,24 +68,51 @@ module RunBugRun
       method_option :abort_on_timeout, desc: 'stop execution after specified number of seconds', type: :numeric,
                                        default: 1
       method_option :workers, desc: 'number of workers to use for evaluation', type: :numeric, default: 8
-      def eval(_filename = nil)
+      method_option :limit, desc: 'only evaluate a limited number of bugs', type: :numeric, default: nil
+      def eval(candidates_filename = nil)
         version = options.fetch(:version) { RunBugRun::Dataset.last_version }
         languages = options.fetch(:languages, RunBugRun::Bugs::ALL_LANGUAGES).map(&:to_sym)
         unless (languages - RunBugRun::Bugs::ALL_LANGUAGES).empty?
           raise ArgumentError, "invalid languages: must be subset of #{RunBugRun::Bugs::ALL_LANGUAGES}"
         end
 
+        output_filename = options.fetch(:output_filename)
         dataset = RunBugRun::Dataset.new(version:)
-        bugs = dataset.load_bugs split: options.fetch(:split, :test).to_sym, languages: languages.map(&:to_sym)
+        split = options.fetch(:split, :test).to_sym
+        languages = languages.map(&:to_sym)
+        bugs = dataset.load_bugs(split:, languages:)
+        candidate_submissions = CandidateSubmissions.load(candidates_filename, bugs) if candidates_filename
         tests = dataset.load_tests
-        bugs.evaluate! tests,
-                       checkpoint: options.fetch(:checkpoint, nil),
-                       output_filename: options.fetch(:output_filename),
-                       fixed: options.fetch(:fixed),
-                       buggy: options.fetch(:buggy),
-                       abort_on_timeout: options.fetch(:abort_on_timeout),
-                       abort_on_fail: options.fetch(:abort_on_fail),
-                       abort_on_error: options.fetch(:abort_on_error)
+
+        limit = options[:limit]
+        bugs = bugs.take(limit) if limit
+
+        # We don't need accurate time. Time.now gives more human-friendly output
+        start_time = Time.now # Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        results = bugs.evaluate! tests,
+                                 candidates: candidate_submissions,
+                                 checkpoint: options.fetch(:checkpoint, nil),
+                                 fixed: options.fetch(:fixed),
+                                 buggy: options.fetch(:buggy),
+                                 abort_on_timeout: options.fetch(:abort_on_timeout),
+                                 abort_on_fail: options.fetch(:abort_on_fail),
+                                 abort_on_error: options.fetch(:abort_on_error)
+
+        end_time = Time.now # Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        json = {
+          split:,
+          languages:,
+          options:,
+          version:,
+          start_time:,
+          end_time:,
+          results:
+        }
+
+        print_eval_summary results, output_filename, start_time, end_time
+        JSONUtils.write_json output_filename, json, compression: :gzip
       end
 
       desc 'junit BUG_IDS', 'generate JUnit tests for the specified bugs'

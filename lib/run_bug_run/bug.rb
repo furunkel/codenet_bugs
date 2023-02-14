@@ -1,8 +1,7 @@
 module RunBugRun
   class Bug
     attr_reader :id, :language, :problem_id, :user_id, :buggy_submission,
-                :fixed_submission, :candidate_submissions, :labels, :change_count, :line_hunks
-    attr_writer :candidate_submissions
+                :fixed_submission, :labels, :change_count, :line_hunks
 
     def initialize(id:, language:, problem_id:, user_id:, labels:, buggy_submission:, fixed_submission:, change_count:, line_hunks:)
       @id = id
@@ -30,8 +29,6 @@ module RunBugRun
         buggy_submission
       when :fixed
         fixed_submission
-      when Integer
-        candidate_submissions[version]
       else
         nil
       end
