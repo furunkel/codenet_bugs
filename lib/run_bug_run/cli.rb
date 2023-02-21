@@ -44,7 +44,7 @@ module RunBugRun
           # for consistency ?
           RunBugRun.logger.then do |l|
             l.info "#{passing_rows.size}/#{all_rows.size} passed (#{(passing_rows.size / all_rows.size.to_f * 100.0).round(2)}%)"
-            l.info "Evaluated #{bug_count} bugs (#{bugs_per_s}/s), #{submission_count} submissions (#{submissions_per_s}/s), #{run_count} runs (#{runs_per_s}/s) in #{seconds_to_time_str elapsed_time} seconds"
+            l.info "Evaluating #{bug_count} bugs (#{bugs_per_s}/s), #{submission_count} submissions (#{submissions_per_s}/s), #{run_count} runs (#{runs_per_s}/s) took #{seconds_to_time_str elapsed_time}"
             l.info "Evaluation results written to #{output_filename}"
             l.info "Use `rbugr analyze #{output_filename}` to analyze performance"
           end
@@ -69,6 +69,7 @@ module RunBugRun
                                        default: 1
       method_option :workers, desc: 'number of workers to use for evaluation', type: :numeric, default: 8
       method_option :limit, desc: 'only evaluate a limited number of bugs', type: :numeric, default: nil
+      method_option :variant, desc: 'variant to evaluate', type: :string, default: nil
       def eval(candidates_filename = nil)
         version = options.fetch(:version) { RunBugRun::Dataset.last_version }
         languages = options.fetch(:languages, RunBugRun::Bugs::ALL_LANGUAGES).map(&:to_sym)
@@ -90,14 +91,15 @@ module RunBugRun
         # We don't need accurate time. Time.now gives more human-friendly output
         start_time = Time.now # Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-        results = bugs.evaluate! tests,
+        results = bugs.evaluate!(tests,
                                  candidates: candidate_submissions,
                                  checkpoint: options.fetch(:checkpoint, nil),
                                  fixed: options.fetch(:fixed),
                                  buggy: options.fetch(:buggy),
                                  abort_on_timeout: options.fetch(:abort_on_timeout),
                                  abort_on_fail: options.fetch(:abort_on_fail),
-                                 abort_on_error: options.fetch(:abort_on_error)
+                                 abort_on_error: options.fetch(:abort_on_error),
+                                 variant: options[:variant]&.to_sym)
 
         end_time = Time.now # Process.clock_gettime(Process::CLOCK_MONOTONIC)
 

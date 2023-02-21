@@ -25,21 +25,37 @@ module RunBugRun
             next
           end
 
-          candidates = row.fetch(:preds).map do |candidate_code|
-            Submission.new(
-              id: bug.buggy_submission.id,
-              code: candidate_code,
-              main_class: bug.fixed_submission.main_class,
-              accepted: true,
-              problem_id: bug.problem_id,
-              language: bug.language
-            )
-          end
+          preds = row.fetch(:preds)
+          candidates =
+            case preds
+            when Hash
+              preds.transform_values do |candidate_codes|
+                build_submissions(bug, candidate_codes)
+              end
+            when Array
+              build_submissions(bug, candidate_codes)
+            end
 
           hash[bug_id] = candidates
         end
         new candidate_submissions
       end
+
+      private
+
+      def build_submissions(bug, candidate_codes)
+        candidate_codes.map do |candidate_code|
+          Submission.new(
+            id: bug.buggy_submission.id,
+            code: candidate_code,
+            main_class: bug.fixed_submission.main_class,
+            accepted: true,
+            problem_id: bug.problem_id,
+            language: bug.language
+          )
+        end
+      end
+
     end
   end
 end

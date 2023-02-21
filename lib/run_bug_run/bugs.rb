@@ -56,7 +56,7 @@ module RunBugRun
     end
 
     def evaluate!(tests, candidates: nil, fixed: false, buggy: false, abort_on_timeout: 1, abort_on_fail: 1,
-                  abort_on_error: 1, checkpoint: nil, workers: 8)
+                  abort_on_error: 1, checkpoint: nil, workers: 8, variant: nil)
       if checkpoint
         all_rows = JSONUtils.load_json(checkpoint, compression: :gzip)
         all_rows.transform_keys!(&:to_i)
@@ -72,10 +72,9 @@ module RunBugRun
       end
 
       eval_rows = evaluate_bugs(bugs, tests, candidates, fixed:, buggy:, abort_on_timeout:, abort_on_fail:,
-                                                         abort_on_error:, progress_proc:, workers:)
+                                                         abort_on_error:, progress_proc:, workers:, variant:)
       all_rows.merge! eval_rows
-    ensure
-      return all_rows
+      all_rows
     end
 
     def inspect
@@ -100,7 +99,7 @@ module RunBugRun
     }.tap { _1.default = Emojis::QUESTION_MARK }.freeze
 
     def evaluate_bugs(bugs, tests, candidates, fixed:, buggy:, workers:, abort_on_timeout: 1, abort_on_fail: 1, abort_on_error: 1,
-                      progress_proc: nil)
+                      progress_proc: nil, variant: nil)
       test_worker_pool = TestWorkerPool.new logger: @logger, size: workers
       eval_rows = {}
       eval_rows_mutex = Mutex.new
@@ -127,6 +126,15 @@ module RunBugRun
                   @logger.warn "No candidates for bug #{bug.id}"
                   []
                 else
+                  if variant && candidate_submissions.is_a?(Hash)
+                    candidate_submissions = candidate_submissions[variant]
+                    if candidate_submissions.nil?
+                      @logger.warn "No candidates for bug #{bug.id} (#{variant})"
+                      candidate_submissions = []
+                    end
+                  else
+                    raise ArgumentError, 'multiple variants found but no variant specificied'
+                  end
                   candidate_submissions.each_with_object([]) do |candidate_submission, acc|
                     runs, worker_info = test_worker_pool.submit(candidate_submission, problem_tests,
                                                                 abort_on_timeout:,
