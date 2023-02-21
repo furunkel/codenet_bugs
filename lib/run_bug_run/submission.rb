@@ -12,15 +12,16 @@ module RunBugRun
       go: 'go'
     }.freeze
 
-    attr_reader :id, :code, :problem_id, :language, :main_class, :accepted
+    attr_reader :id, :code, :problem_id, :language, :main_class, :accepted, :errors
 
-    def initialize(id:, code:, problem_id:, language:, main_class:, accepted:)
+    def initialize(id:, code:, problem_id:, language:, main_class:, accepted:, errors: nil)
       @id = id
       @code = code
       @problem_id = problem_id
       @language = language.to_sym
       @main_class = main_class
       @accepted = accepted
+      @errors = errors
     end
 
     def self.from_hash(hash)
@@ -28,7 +29,7 @@ module RunBugRun
     end
 
     def to_h
-      {id:, code:, problem_id:, language:, main_class:, accepted:}
+      {id:, code:, problem_id:, language:, main_class:, accepted:, errors:}
     end
 
     def accepted? = @accepted
