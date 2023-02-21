@@ -198,7 +198,8 @@ module RunBugRun
               main_class: hash[:buggy_main_class],
               accepted: false,
               problem_id:,
-              language:
+              language:,
+              errors: hash[:errors]
             )
 
             fixed_submission = Submission.new(
@@ -207,7 +208,8 @@ module RunBugRun
               main_class: hash[:fixed_main_class],
               accepted: true,
               problem_id:,
-              language:
+              language:,
+              errors: hash[:errors]
             )
 
             bug = Bug.new(
