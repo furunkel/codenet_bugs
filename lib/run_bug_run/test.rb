@@ -15,5 +15,9 @@ module RunBugRun
     def to_h
       {id:, input:, output:}
     end
+
+    def to_json(*args)
+      JSON.generate(to_h, *args)
+    end
   end
 end

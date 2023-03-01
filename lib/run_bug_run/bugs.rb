@@ -29,7 +29,14 @@ module RunBugRun
     def each(...) = @bugs.each_value(...)
 
     def initialize(bugs, logger_level: Logger::INFO, logger: nil)
-      @bugs = bugs
+      case bugs
+      when Hash
+        @bugs = bugs
+      when Array
+        @bugs = bugs.each_with_object({}) { |b, o| o[b.id] = b }
+      else
+        raise ArgumentError, "first parameter must be hash or array"
+      end
       @logger = Logger.new || logger
       @logger.level = logger_level
     end
@@ -46,6 +53,8 @@ module RunBugRun
     def [](bug_id)
       @bugs[bug_id.to_i]
     end
+
+    def select(...) = self.class.new(@bugs.each_value.select(...), logger: @logger, logger_level: @logger.level)
 
     def take(count)
       self.class.new(@bugs.take(count).to_h, logger: @logger, logger_level: @logger.level)
@@ -126,14 +135,14 @@ module RunBugRun
                   @logger.warn "No candidates for bug #{bug.id}"
                   []
                 else
-                  if variant && candidate_submissions.is_a?(Hash)
+                  if candidate_submissions.is_a?(Hash)
+                    raise ArgumentError, 'multiple variants found but no variant specificied' if variant.nil?
+
                     candidate_submissions = candidate_submissions[variant]
                     if candidate_submissions.nil?
                       @logger.warn "No candidates for bug #{bug.id} (#{variant})"
                       candidate_submissions = []
                     end
-                  else
-                    raise ArgumentError, 'multiple variants found but no variant specificied'
                   end
                   candidate_submissions.each_with_object([]) do |candidate_submission, acc|
                     runs, worker_info = test_worker_pool.submit(candidate_submission, problem_tests,

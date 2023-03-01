@@ -38,17 +38,25 @@ module RunBugRun
 
       desc 'show ID', 'show bug for given ID'
       method_option :version, type: :string
+      method_option :tests, desc: 'show tests for this bug', type: :boolean, default: false
       # method_option :language, type: :string, enum: RunBugRun::Bugs::ALL_LANGUAGES.map(&:to_s)
       # method_option :split, type: :string, enum: RunBugRun::Bugs::SPLITS.map(&:to_s)
       def show(id)
-        _, bug = load_bug(id)
+        dataset, bug = load_bug(id)
         hash = {
           id: bug.id,
           language: bug.language,
           problem_id: bug.problem_id,
           change_count: bug.change_count,
-          labels: bug.labels
+          labels: bug.labels,
+          errors: bug.buggy_submission.errors
         }
+
+        if options[:tests]
+          tests = dataset.load_tests
+          bug_tests = tests[bug.problem_id]
+          hash[:tests] = bug_tests.map(&:to_h)
+        end
 
         puts JSON.pretty_generate(hash)
       end

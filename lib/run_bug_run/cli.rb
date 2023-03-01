@@ -28,11 +28,20 @@ module RunBugRun
           format('%02d:%02d:%02d', seconds / 3600, (seconds / 60) % 60, seconds % 60)
         end
 
-        def print_eval_summary(all_rows, output_filename, start_time, end_time)
+        def print_eval_summary(all_rows, bugs, tests, output_filename, start_time, end_time)
           elapsed_time = (end_time - start_time).to_f
-          passing_rows = all_rows.select do |_bug_id, candidate_runs|
-            candidate_runs.any? { |runs| runs.all? { _1.fetch(:result) == 'pass' } }
+          passing_rows = all_rows.select do |bug_id, candidate_runs|
+            bug = bugs[bug_id]
+            test_count = tests[bug.problem_id].size
+            candidate_runs.any? { |runs| runs.count { _1.fetch(:result) == 'pass' } == test_count }
           end
+
+          bugs_with_results = all_rows.count do |_bug_id, candidate_runs|
+            candidate_runs.any?
+          end
+
+          bugs_without_results = all_rows.size - bugs_with_results.size
+
           bug_count = all_rows.size
           submission_count = all_rows.values.flatten(1).size
           run_count = all_rows.values.flatten(2).size
@@ -43,7 +52,7 @@ module RunBugRun
           # Write to stderr, as we normally output JSON to stdout
           # for consistency ?
           RunBugRun.logger.then do |l|
-            l.info "#{passing_rows.size}/#{all_rows.size} passed (#{(passing_rows.size / all_rows.size.to_f * 100.0).round(2)}%)"
+            l.info "#{passing_rows.size}/#{all_rows.size} passed (#{(passing_rows.size / bugs_with_results.to_f * 100.0).round(2)}%, #{bugs_without_results} missing)"
             l.info "Evaluating #{bug_count} bugs (#{bugs_per_s}/s), #{submission_count} submissions (#{submissions_per_s}/s), #{run_count} runs (#{runs_per_s}/s) took #{seconds_to_time_str elapsed_time}"
             l.info "Evaluation results written to #{output_filename}"
             l.info "Use `rbugr analyze #{output_filename}` to analyze performance"
@@ -113,7 +122,7 @@ module RunBugRun
           results:
         }
 
-        print_eval_summary results, output_filename, start_time, end_time
+        print_eval_summary results, bugs, tests, output_filename, start_time, end_time
         JSONUtils.write_json output_filename, json, compression: :gzip
       end
 
@@ -202,26 +211,49 @@ module RunBugRun
         puts JSON.pretty_generate(passing)
       end
 
+      no_commands do
+        def abs_rel(options, a, b)
+          if options.fetch(:abs)
+            "#{a}/#{b}"
+          else
+            (a.to_f / b.to_f).round(4)
+          end
+        end
+      end
+
       desc 'analyze OUTPUT_FILE', 'analyze evaluation results'
       method_option :by_language, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_change_count, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_label, desc: 'Analyze per label', type: :boolean, default: false
+      method_option :by_exception, desc: 'Analyze per exception', type: :boolean, default: false
       method_option :only_passing, desc: 'The file to analyze contains passing bugs only', type: :boolean,
                                    default: false
+      method_option :only_evaluated, desc: 'Ignore bugs not evaluated in the input file', type: :boolean, default: false
+      method_option :o, desc: 'Output filename', type: :string, required: false, default: nil
+      method_option :abs, desc: 'Output absolute numbers (instead of relative frequencies)', type: :boolean, default: false
+
       def analyze(output_filename)
         output = JSONUtils.load_file output_filename, symbolize_names: false
         version = output.fetch('version')
         languages = output.fetch('languages').map(&:to_sym)
-        dataset = RunBugRun::Dataset.new(version:)
-        bugs = dataset.load_bugs(split: output.fetch('split').to_sym, languages:)
-
+        split = output.fetch('split').to_sym
         runs = output.fetch('results')
+
+        dataset = RunBugRun::Dataset.new(version:)
+        bugs = dataset.load_bugs(split:, languages:)
+
+        if options.fetch(:only_evaluated)
+          bugs = bugs.select { runs[_1.id.to_s]&.any? }
+        end
+
         valid_bugs, _failing_bugs = partition_runs(runs, options)
 
-        run_count = (options[:only_passing] ? bugs : runs).size.to_f
+        run_count = ((options[:only_passing] || options[:only_evaluated]) ? bugs : runs).size
 
         result = {
-          plausibility_rate: (valid_bugs.size / run_count).round(4)
+          plausibility_rate: abs_rel(options, valid_bugs.size, run_count),
+          plausible_bugs: valid_bugs.size,
+          total_bugs: run_count
         }
 
         if options.fetch(:by_label)
@@ -277,6 +309,15 @@ module RunBugRun
           end
         end
 
+        if options.fetch(:by_exception)
+          runs.group_by { |bug_id, _pred_runs| bugs[bug_id]&.buggy_submission&.errors&.flat_map { _1[:exception]}&.uniq&.compact }.each do |exceptions, runs|
+            next if exceptions.nil? || exceptions.empty?
+            # valid_bugs, _failing_bugs = runs.partition { |_bug_id, pred_runs|  pred_runs.any?{ |pr| pr.all? { _1['result'] == 'pass'}}}
+            valid_bugs, _failing_bugs = partition_runs(runs, options)
+            result[:"plausibility_rate_#{exceptions.join('_')}"] = abs_rel(options, valid_bugs.size, runs.size)
+          end
+        end
+
         if options.fetch(:by_change_count)
           runs.group_by { |bug_id, _pred_runs| bugs[bug_id]&.change_count }.each do |change_count, runs|
             valid_bugs, _failing_bugs = partition_runs(runs, options)
@@ -307,7 +348,12 @@ module RunBugRun
           end
         end
 
-        puts JSON.pretty_generate(result.sort.to_h)
+        json_output = JSON.pretty_generate(result.sort.to_h)
+        if (o = options.fetch(:o))
+          File.write(o, json_output)
+        else
+          puts json_output
+        end
       end
 
       require 'run_bug_run/cli/dataset'
@@ -317,6 +363,10 @@ module RunBugRun
       require 'run_bug_run/cli/bugs'
       desc 'bugs', 'get information on bugs'
       subcommand 'bugs', CLI::Bugs
+
+      require 'run_bug_run/cli/utils'
+      desc 'utils', 'utility commands'
+      subcommand 'utils', CLI::Utils
     end
   end
 end

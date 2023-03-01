@@ -29,11 +29,11 @@ module RunBugRun
           candidates =
             case preds
             when Hash
-              preds.transform_values do |candidate_codes|
-                build_submissions(bug, candidate_codes)
+              preds.transform_values do |variant_preds|
+                build_submissions(bug, variant_preds)
               end
             when Array
-              build_submissions(bug, candidate_codes)
+              build_submissions(bug, preds)
             end
 
           hash[bug_id] = candidates
