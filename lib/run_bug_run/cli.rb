@@ -3,6 +3,7 @@ require 'pp'
 require 'run_bug_run/bugs'
 require 'run_bug_run/tests'
 require 'run_bug_run/candidate_submissions'
+require 'run_bug_run/cli/analyzer'
 
 module RunBugRun
   module CLI
@@ -177,16 +178,6 @@ module RunBugRun
         # pp ids.size
       end
 
-      no_commands do
-        def partition_runs(runs, options = {})
-          if options[:only_passing]
-            [runs, []]
-          else
-            runs.partition { |_bug_id, pred_runs| pred_runs.any? { |pr| pr.all? { _1.fetch('result') == 'pass' } } }
-          end
-        end
-      end
-
       desc 'failing OUTPUT_FILE', 'show ids of failing bugs'
       def failing(output_filename)
         eval_output = JSONUtils.load_file output_filename
@@ -226,130 +217,19 @@ module RunBugRun
       method_option :by_change_count, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_label, desc: 'Analyze per label', type: :boolean, default: false
       method_option :by_exception, desc: 'Analyze per exception', type: :boolean, default: false
-      method_option :only_passing, desc: 'The file to analyze contains passing bugs only', type: :boolean,
+      method_option :only_plausible, desc: 'The file to analyze contains plausible bug candidates only', type: :boolean,
                                    default: false
-      method_option :only_evaluated, desc: 'Ignore bugs not evaluated in the input file', type: :boolean, default: false
+      method_option :ignore_missing, desc: 'Ignore bugs with no results in the evaluation result file', type: :boolean, default: false
       method_option :o, desc: 'Output filename', type: :string, required: false, default: nil
-      method_option :abs, desc: 'Output absolute numbers (instead of relative frequencies)', type: :boolean, default: false
+      method_option :format, desc: 'Output format for plausibility', type: :string, enum: %w[rel abs verbose], default: 'rel'
 
       def analyze(output_filename)
-        output = JSONUtils.load_file output_filename, symbolize_names: false
-        version = output.fetch('version')
-        languages = output.fetch('languages').map(&:to_sym)
-        split = output.fetch('split').to_sym
-        runs = output.fetch('results')
+        analyzer = Analyzer.new(output_filename, options)
+        report = analyzer.analyze
 
-        dataset = RunBugRun::Dataset.new(version:)
-        bugs = dataset.load_bugs(split:, languages:)
 
-        if options.fetch(:only_evaluated)
-          bugs = bugs.select { runs[_1.id.to_s]&.any? }
-        end
-
-        valid_bugs, _failing_bugs = partition_runs(runs, options)
-
-        run_count = ((options[:only_passing] || options[:only_evaluated]) ? bugs : runs).size
-
-        result = {
-          plausibility_rate: abs_rel(options, valid_bugs.size, run_count),
-          plausible_bugs: valid_bugs.size,
-          total_bugs: run_count
-        }
-
-        if options.fetch(:by_label)
-          all_labels = Hash.new { |h, k| h[k] = 0 }
-          bugs.each do |bug|
-            # bug = bugs[bug_id]
-            bug&.labels&.each { all_labels[_1] += 1 }
-            # if bug.nil?
-            #   puts "Missing bug #{bug_id}"
-            # end
-          end
-
-          # Remove low-frequency labels
-          all_labels.delete_if { |_k, v| v < 30 }
-
-          all_labels_abs = all_labels.dup
-          all_labels_sum = all_labels.sum(0) { _2 }.to_f
-          all_labels = all_labels.transform_values { [_1 / all_labels_sum, _1] }
-
-          # label_dist = JSONUtils.load_internal('export', 'export_label_dist_test.json.gz', symbolize_names: false)
-          valid_labels = Hash.new { |h, k| h[k] = 0 }
-
-          valid_bugs.each do |bug_id, _pred_runs|
-            bug = bugs[bug_id]
-            bug&.labels&.each { valid_labels[_1] += 1 }
-          end
-
-          # only keep frequent labels
-          valid_labels.delete_if { |k, _v| !all_labels.key? k }
-
-          valid_labels_sum = valid_labels.sum(0) { _2 }.to_f
-          valid_labels = valid_labels.map { |k, v| [k, [v / valid_labels_sum, v]] }.to_h
-
-          scores = all_labels.map do |label, (rel_f, abs_f)|
-            [
-              label,
-              [((valid_labels.dig(label, 0) || 0.0)) / rel_f, valid_labels.dig(label, 1) || 0, abs_f]
-            ]
-          end
-
-          best_labels = scores.sort_by { [-_2[0], -_2[-1]] }.take(15).to_h
-          worst_labels = scores.sort_by { [_2[0], -_2[-1]] }.take(15).to_h
-
-          result[:best_labels] = best_labels
-          result[:wort_labels] = worst_labels
-        end
-
-        if options.fetch(:by_language) && !options[:only_passing]
-          runs.group_by { |bug_id, _pred_runs| bugs[bug_id]&.language }.each do |language, runs|
-            # valid_bugs, _failing_bugs = runs.partition { |_bug_id, pred_runs|  pred_runs.any?{ |pr| pr.all? { _1['result'] == 'pass'}}}
-            valid_bugs, _failing_bugs = partition_runs(runs, options)
-            result[:"plausibility_rate_#{language}"] = (valid_bugs.size / runs.size.to_f).round(4)
-          end
-        end
-
-        if options.fetch(:by_exception)
-          runs.group_by { |bug_id, _pred_runs| bugs[bug_id]&.buggy_submission&.errors&.flat_map { _1[:exception]}&.uniq&.compact }.each do |exceptions, runs|
-            next if exceptions.nil? || exceptions.empty?
-            # valid_bugs, _failing_bugs = runs.partition { |_bug_id, pred_runs|  pred_runs.any?{ |pr| pr.all? { _1['result'] == 'pass'}}}
-            valid_bugs, _failing_bugs = partition_runs(runs, options)
-            result[:"plausibility_rate_#{exceptions.join('_')}"] = abs_rel(options, valid_bugs.size, runs.size)
-          end
-        end
-
-        if options.fetch(:by_change_count)
-          runs.group_by { |bug_id, _pred_runs| bugs[bug_id]&.change_count }.each do |change_count, runs|
-            valid_bugs, _failing_bugs = partition_runs(runs, options)
-
-            z =
-              if options[:only_passing]
-                bugs.count { |bug| bug.change_count == change_count }.to_f
-              else
-                runs.size.to_f
-              end
-
-            result[:"plausibility_rate_change_count#{change_count}"] = (valid_bugs.size / z).round(4)
-          end
-
-          runs.group_by do |bug_id, _pred_runs|
-            bugs[bug_id]&.line_hunks&.then do
-              _1 || 'other'
-            end
-          end.each do |change_count, runs|
-            valid_bugs, _failing_bugs = partition_runs(runs, options)
-            z =
-              if options[:only_passing]
-                bugs.count { |bug| bug.change_count == change_count }.to_f
-              else
-                runs.size.to_f
-              end
-            result[:"plausibility_rate_line_hunks#{change_count}"] = (valid_bugs.size / z).round(4)
-          end
-        end
-
-        json_output = JSON.pretty_generate(result.sort.to_h)
-        if (o = options.fetch(:o))
+        json_output = JSON.pretty_generate(report.sort.to_h)
+        if (o = options[:o])
           File.write(o, json_output)
         else
           puts json_output

@@ -60,6 +60,10 @@ module RunBugRun
       self.class.new(@bugs.take(count).to_h, logger: @logger, logger_level: @logger.level)
     end
 
+    def select_bugs_with_results(results)
+      bugs.select { results.any_for_bug?(_1) }
+    end
+
     def bug_ids
       @bugs.keys
     end
