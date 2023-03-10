@@ -66,6 +66,7 @@ module RunBugRun
       method_option :abort_on_error, desc: 'stop execution on first error', type: :boolean, default: true
       method_option :abort_on_fail, desc: 'stop execution on first failing test', type: :boolean, default: false
       method_option :abort_on_timeout, desc: 'stop execution after specified number of seconds', type: :numeric, default: 1
+      method_option :input, desc: 'custom input (if omitted test input is used)', type: :string, alias: :i, repeatable: true
       def exec(id)
         dataset, bug = load_bug(id)
         tests = dataset.load_tests
@@ -83,7 +84,13 @@ module RunBugRun
         abort_on_error = options.fetch(:abort_on_error)
         abort_on_fail = options.fetch(:abort_on_fail)
 
-        submission_tests = tests[bug.problem_id]
+        submission_tests =
+          if (inputs = options[:input])
+            inputs.map { |input| RunBugRun::Test.new id: nil, input:, output: '' }
+          else
+            tests[bug.problem_id]
+          end
+
         runs, _worker_info = test_worker_pool.submit(submission, submission_tests,
                                        abort_on_timeout:,
                                        abort_on_error:,

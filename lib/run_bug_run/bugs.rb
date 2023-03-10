@@ -61,7 +61,11 @@ module RunBugRun
     end
 
     def select_bugs_with_results(results)
-      bugs.select { results.any_for_bug?(_1) }
+      @bugs.select { results.any_for_bug?(_1) }
+    end
+
+    def select_languages(languages)
+      @bugs.select { |_bug_id, bug| languages.include? bug.language }
     end
 
     def bug_ids

@@ -18,17 +18,22 @@ module RunBugRun
         plausible_count = @results.plausible_count
 
         report = {
-          plausibility_rate: format_plausiblity_rate(plausible_count, total_bugs),
+          plausibility_rate: format_rate(plausible_count, total_bugs),
           plausible: plausible_count,
           total: total_bugs
         }
 
         analyze_by_label(report) if options.fetch(:by_label)
+        analyze_weak_strong_points(report) if options[:strong_points] || options[:weak_points]
         analyze_by_language(report) if options.fetch(:by_language) && !options[:only_passing]
         analyze_by_exception(report) if options.fetch(:by_exception)
         analyze_by_change_count(report) if options.fetch(:by_change_count)
 
         report
+      end
+
+      def inspect
+        "#<#{self.class.name}: size=#{@bugs.size}>"
       end
 
       private
@@ -43,11 +48,21 @@ module RunBugRun
         @bugs = dataset.load_bugs(split:, languages:)
         @tests = dataset.load_tests
 
-        @results = EvaluationResults.new(output.fetch('results'), @bugs, @tests, only_plausible: @options.fetch(:only_plausible, false))
-        @bugs = @bugs.select_bugs_with_results if options.fetch(:ignore_missing)
+        @results = EvaluationResults.new(
+          output.fetch('results'),
+          @bugs, @tests,
+          only_plausible: @options.fetch(:only_plausible, false),
+          candidate_limit: @options.fetch(:candidate_limit, nil)
+        )
+
+        if (languages = @options[:languages])
+          @results = @results.filter_languages(languages.map(&:to_sym))
+        end
+
+        @bugs = @bugs.select_bugs_with_results(@results) if options.fetch(:ignore_missing)
       end
 
-      def format_plausiblity_rate(plausible, total)
+      def format_rate(plausible, total)
         format = @options.fetch(:format, :rel)
         case format
         when 'abs'
@@ -64,7 +79,7 @@ module RunBugRun
       def analyze_by_language(report)
         @results.group_by_language.each do |language, results|
           plausible_count = results.plausible_count
-          report[:"plausibility_rate_#{language}"] = format_plausiblity_rate(plausible_count, results.size)
+          report[:"plausibility_rate_#{language}"] = format_rate(plausible_count, results.size)
         end
       end
 
@@ -72,7 +87,7 @@ module RunBugRun
         @results.group_by_change_count.each do |change_count, results|
           plausible_count = results.plausible_count
           report[:"plausibility_rate_change_count#{change_count}"] =
-            format_plausiblity_rate(plausible_count, results.size)
+            format_rate(plausible_count, results.size)
         end
         # runs.group_by do |bug_id, _pred_runs|
         #   bugs[bug_id]&.line_hunks&.then do
@@ -90,51 +105,35 @@ module RunBugRun
         # end
       end
 
-      def analyze_exceptions(report)
-        @results.group_by_exceptions.each do |exceptions, results|
+      def analyze_by_exception(report)
+        @results.group_by_exception.each do |exception, results|
           name =
-            if exceptions.nil? || exceptions.empty?
-              'no_exceptions'
+            if exception.nil?
+              'no_exception'
             else
-              exceptions.join('_')
+              exception
             end
 
           # plausible_results, _failing_bugs = runs.partition { |_bug_id, pred_runs|  pred_runs.any?{ |pr| pr.all? { _1['result'] == 'pass'}}}
           plausible_count = results.plausible_count
-          report[:"plausibility_rate_#{name}"] = abs_rel(options, plausible_count, results.size)
+          report[:"plausibility_rate_#{name}"] = format_rate(plausible_count, results.size)
         end
       end
 
       def analyze_by_label(report)
-        label_counts = Hash.new { |h, k| h[k] = 0 }
-        @bugs.each do |bug|
-          labels = bug&.labels
-          if labels.nil? || labels.empty?
-            label_counts['no_label'] += 1
-          else
-            labels.each { label_counts[_1] += 1 }
-          end
+        label_counts = bug_label_counts
+        plausible_label_counts = plausible_label_counts(@results.where_any_plausible_candidate, label_counts)
+
+        plausible_label_counts.each do |label, count|
+          report[:"plausibility_rate_#{label}"] = format_rate(count, label_counts.fetch(label))
         end
+      end
 
-        # Remove low-frequency labels
-        label_counts.delete_if { |_label, count| count < 30 }
-
+      def analyze_weak_strong_points(report)
+        label_counts = bug_label_counts
         label_counts_sum = label_counts.sum { |_label, count| count }.to_f
         # label_counts = all_labels.transform_values { [_1 / all_labels_sum, _1] }
-        plausible_label_counts = Hash.new { |h, k| h[k] = 0 }
-
-        plausible_results = @results.where_any_plausible_candidate
-        plausible_results.each_bug do |bug|
-          labels = bug&.labels
-          if labels.nil? || labels.empty?
-            plausible_label_counts['no_label'] += 1
-          else
-            labels.each { plausible_label_counts[_1] += 1 }
-          end
-        end
-
-        # only keep frequent labels
-        plausible_label_counts.delete_if { |label, _count| !label_counts.key? label }
+        plausible_label_counts = plausible_label_counts(@results.where_any_plausible_candidate, label_counts)
 
         plausible_label_counts_sum = plausible_label_counts.sum { |_label, count| count }.to_f
         # plausible_label_counts = plausible_label_counts.map { |k, v| [k, [v / plausible_label_counts_sum, v]] }.to_h
@@ -149,13 +148,53 @@ module RunBugRun
           [label, [r, plausible_count, count]]
         end
 
-        best_labels = scores.sort_by { |_label, freqs| [-freqs[0], -freqs[-1]] }.take(15).to_h
-        worst_labels = scores.sort_by { |_label, freqs| [freqs[0], -freqs[-1]] }.take(15).to_h
+        if @options[:strong_points]
+          best_labels = scores.sort_by { |_label, freqs| [-freqs[0], -freqs[-1]] }.take(15).to_h
+          report[:strong_points] = best_labels
+        end
 
-        report[:best_labels] = best_labels
-        report[:wort_labels] = worst_labels
+        if @options[:weak_points]
+          worst_labels = scores.sort_by { |_label, freqs| [freqs[0], -freqs[-1]] }.take(15).to_h
+          report[:weak_points] = worst_labels
+        end
         report[:no_labels] = scores.assoc('no_label')[1]
       end
+
+      private
+
+      def bug_label_counts
+        label_counts = Hash.new { |h, k| h[k] = 0 }
+        @bugs.each do |bug|
+          labels = bug&.labels
+          if labels.nil? || labels.empty?
+            label_counts['no_label'] += 1
+          else
+            labels.each { label_counts[_1] += 1 }
+          end
+        end
+
+        # Remove low-frequency labels
+        label_counts.delete_if { |_label, count| count < 30 }
+        label_counts
+      end
+
+      def plausible_label_counts(plausible_results, label_counts)
+        plausible_label_counts = Hash.new { |h, k| h[k] = 0 }
+
+        plausible_results.each_bug do |bug|
+          labels = bug&.labels
+          if labels.nil? || labels.empty?
+            plausible_label_counts['no_label'] += 1
+          else
+            labels.each { plausible_label_counts[_1] += 1 }
+          end
+        end
+
+        # only keep frequent labels
+        plausible_label_counts.delete_if { |label, _count| !label_counts.key? label }
+        plausible_label_counts
+      end
+
     end
   end
 end

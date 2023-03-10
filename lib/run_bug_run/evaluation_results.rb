@@ -2,15 +2,16 @@ module RunBugRun
   class EvaluationResults
     attr_reader :bugs, :tests, :only_plausible
 
-    def initialize(results_hash, bugs, tests, only_plausible: false)
+    def initialize(results_hash, bugs, tests, only_plausible: false, candidate_limit: nil)
       @only_plausible = only_plausible
+      @candidate_limit = candidate_limit
       @results_hash = results_hash
       @bugs = bugs
       @tests = tests
     end
 
     def dup
-      self.new(@results_hash.dup, @bugs, @tests, only_plausible:)
+      self.class.new(@results_hash.dup, @bugs, @tests, only_plausible:)
     end
 
     def size = @results_hash.size
@@ -23,10 +24,37 @@ module RunBugRun
       wrap_values(@results_hash.group_by { |bug_id, _candidate_results| @bugs[bug_id]&.language })
     end
 
-    def group_by_exceptions
-      wrap_values(@results_hash.group_by do |bug_id, _candidate_results|
-        @bugs[bug_id]&.buggy_submission&.errors&.flat_map { _1[:exception]&.uniq&.compact }
-      end)
+    def inspect
+      "#<#{self.class.name} size=#{@results_hash.size}>"
+    end
+
+    def filter_languages(languages)
+      results_hash = @results_hash.select do |bug_id, _candidate_runs|
+        bug = @bugs[bug_id]
+        languages.include?(bug.language)
+      end
+      self.class.new(results_hash, @bugs, @tests, only_plausible:)
+    end
+
+    def group_by_exception
+      by_exception_map = Hash.new { |h, k| h[k] = {} }
+      no_exceptions = {}
+      @results_hash.each do |bug_id, candidate_results|
+        bug = @bugs[bug_id]
+        exceptions = bug&.buggy_submission&.errors&.flat_map { _1[:exception] }
+        if exceptions.nil? || exceptions.empty?
+          no_exceptions[bug_id] = candidate_results
+        else
+          exceptions&.uniq!
+          exceptions&.compact!
+          exceptions&.each do |exception|
+            by_exception_map[exception][bug_id] = candidate_results
+          end
+        end
+      end
+      by_exception_map[nil] = no_exceptions
+      wrap_values!(by_exception_map)
+      by_exception_map
     end
 
     def group_by_change_count
@@ -56,12 +84,7 @@ module RunBugRun
         size
       else
         @results_hash.count do |bug_id, candidate_results|
-          bug = @bugs[bug_id]
-          test_count = tests[bug.problem_id].size
-          candidate_results.any? do |candidate_test_runs|
-            passed_count = candidate_test_runs.count { _1.fetch('result') == 'pass' }
-            passed_count == test_count
-          end
+          plausible_candidate?(bug_id, candidate_results)
         end
       end
     end
@@ -71,12 +94,7 @@ module RunBugRun
         dup
       else
         filtered_results_hash = @results_hash.select do |bug_id, candidate_results|
-          bug = @bugs[bug_id]
-          test_count = tests[bug.problem_id].size
-          candidate_results.any? do |candidate_test_runs|
-            passed_count = candidate_test_runs.count { _1.fetch('result') == 'pass' }
-            passed_count == test_count
-          end
+          plausible_candidate?(bug_id, candidate_results)
         end
 
         self.class.new(filtered_results_hash, @bugs, @tests, only_plausible: false)
@@ -85,8 +103,29 @@ module RunBugRun
 
     private
 
+    def plausible_candidate?(bug_id, candidate_results)
+      bug = @bugs[bug_id]
+      test_count = tests[bug.problem_id].size
+      candidate_results_enum =
+        if @candidate_limit
+          candidate_results.lazy.take(@candidate_limit)
+        else
+          candidate_results
+        end
+      candidate_results_enum.any? do |candidate_test_runs|
+        passed_count = candidate_test_runs.count { _1.fetch('result') == 'pass' }
+        passed_count == test_count
+      end
+    end
+
     def wrap_values(groups_hash)
       groups_hash.transform_values do |group_results_hash|
+        self.class.new(group_results_hash, @bugs, @tests, only_plausible:)
+      end
+    end
+
+    def wrap_values!(groups_hash)
+      groups_hash.transform_values! do |group_results_hash|
         self.class.new(group_results_hash, @bugs, @tests, only_plausible:)
       end
     end

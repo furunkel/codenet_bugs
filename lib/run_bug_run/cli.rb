@@ -41,7 +41,7 @@ module RunBugRun
             candidate_runs.any?
           end
 
-          bugs_without_results = all_rows.size - bugs_with_results.size
+          bugs_without_results = all_rows.size - bugs_with_results
 
           bug_count = all_rows.size
           submission_count = all_rows.values.flatten(1).size
@@ -53,7 +53,7 @@ module RunBugRun
           # Write to stderr, as we normally output JSON to stdout
           # for consistency ?
           RunBugRun.logger.then do |l|
-            l.info "#{passing_rows.size}/#{all_rows.size} passed (#{(passing_rows.size / bugs_with_results.to_f * 100.0).round(2)}%, #{bugs_without_results} missing)"
+            l.info "#{passing_rows.size}/#{all_rows.size} passed (#{(passing_rows.size / bugs_with_results.to_f * 100.0).round(2)}%, #{bugs_without_results} without results)"
             l.info "Evaluating #{bug_count} bugs (#{bugs_per_s}/s), #{submission_count} submissions (#{submissions_per_s}/s), #{run_count} runs (#{runs_per_s}/s) took #{seconds_to_time_str elapsed_time}"
             l.info "Evaluation results written to #{output_filename}"
             l.info "Use `rbugr analyze #{output_filename}` to analyze performance"
@@ -216,17 +216,20 @@ module RunBugRun
       method_option :by_language, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_change_count, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_label, desc: 'Analyze per label', type: :boolean, default: false
+      method_option :strong_points, desc: 'Analyze strong points', type: :boolean, default: nil
+      method_option :weak_points, desc: 'Analyze strong points', type: :boolean, default: nil
       method_option :by_exception, desc: 'Analyze per exception', type: :boolean, default: false
       method_option :only_plausible, desc: 'The file to analyze contains plausible bug candidates only', type: :boolean,
                                    default: false
       method_option :ignore_missing, desc: 'Ignore bugs with no results in the evaluation result file', type: :boolean, default: false
       method_option :o, desc: 'Output filename', type: :string, required: false, default: nil
       method_option :format, desc: 'Output format for plausibility', type: :string, enum: %w[rel abs verbose], default: 'rel'
+      method_option :candidate_limit, desc: 'Limit evaluation to specified number of candidates', type: :numeric, default: nil
+      method_option :languages, desc: 'Limit evaluation to specified number of candidates', type: :array, default: nil
 
       def analyze(output_filename)
         analyzer = Analyzer.new(output_filename, options)
         report = analyzer.analyze
-
 
         json_output = JSON.pretty_generate(report.sort.to_h)
         if (o = options[:o])
