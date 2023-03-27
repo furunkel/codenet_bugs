@@ -77,6 +77,7 @@ module RunBugRun
       method_option :abort_on_fail, desc: 'stop execution on first failing test', type: :boolean, default: false
       method_option :abort_on_timeout, desc: 'stop execution after specified number of seconds', type: :numeric,
                                        default: 1
+      method_option :stop_after_first_pass, desc: 'stop evaluating a specific bug after first passing candidate', type: :boolean, default: true
       method_option :workers, desc: 'number of workers to use for evaluation', type: :numeric, default: 8
       method_option :limit, desc: 'only evaluate a limited number of bugs', type: :numeric, default: nil
       method_option :variant, desc: 'variant to evaluate', type: :string, default: nil
@@ -109,6 +110,7 @@ module RunBugRun
                                  abort_on_timeout: options.fetch(:abort_on_timeout),
                                  abort_on_fail: options.fetch(:abort_on_fail),
                                  abort_on_error: options.fetch(:abort_on_error),
+                                 stop_after_first_pass: options.fetch(:stop_after_first_pass),
                                  variant: options[:variant]&.to_sym)
 
         end_time = Time.now # Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -149,30 +151,60 @@ module RunBugRun
       end
 
       desc 'analyze_cardumen OUTPUT_FILE', 'analyze output file'
+      method_option :by_language, desc: 'Analyze per language', type: :boolean, default: false
+      method_option :by_change_count, desc: 'Analyze per language', type: :boolean, default: false
+      method_option :by_label, desc: 'Analyze per label', type: :boolean, default: false
+      method_option :strong_points, desc: 'Analyze strong points', type: :boolean, default: nil
+      method_option :weak_points, desc: 'Analyze strong points', type: :boolean, default: nil
+      method_option :by_exception, desc: 'Analyze per exception', type: :boolean, default: false
+      method_option :format, desc: 'Output format for plausibility', type: :string, enum: %w[rel abs verbose], default: 'rel'
+      method_option :o, desc: 'Output filename', type: :string, required: false, default: nil
       def analyze_cardumen(output_filename)
-        output = JSONUtils.load_file(output_filename, symbolize_names: false)
-        runs = output.fetch(:results)
-        ids = runs.keys
+        output = {
+          'split' => 'test',
+          'languages' => ['java'],
+          'results' => JSONUtils.load_file(output_filename, symbolize_names: false),
+          'version' => RunBugRun::Dataset.last_version
+        }
+        analyzer = Analyzer.new(output, options.merge(only_plausible: true))
+        report = analyzer.analyze
 
-        dataset = RunBugRun::Dataset.new(version: nil)
-        bugs = dataset.load_bugs(split: :test, languages: %i[java])
-
-        labels = []
-
-        ids.each do |id|
-          bug = bugs[id]
-          if bug.nil?
-            puts "Bug with id #{id} not found..."
-            next
-          end
-          labels.concat(bug.labels) if bug.labels
+        json_output = JSON.pretty_generate(report.sort.to_h)
+        if (o = options[:o])
+          File.write(o, json_output)
+        else
+          puts json_output
         end
 
-        result = runs.transform_values do |run|
-          %("#{run.dig(0, 'patches', 0, 'PATCH_DIFF_ORIG')}").undump
-        end
+        # json_output = JSON.pretty_generate(report.sort.to_h)
+        # if (o = options[:o])
+        #   File.write(o, json_output)
+        # else
+        #   puts json_output
+        # end
 
-        puts JSON.pretty_generate result
+        # runs = output.fetch(:results)
+        # ids = runs.keys
+
+        # dataset = RunBugRun::Dataset.new(version: nil)
+        # bugs = dataset.load_bugs(split: :test, languages: %i[java])
+
+        # labels = []
+
+        # ids.each do |id|
+        #   bug = bugs[id]
+        #   if bug.nil?
+        #     puts "Bug with id #{id} not found..."
+        #     next
+        #   end
+        #   labels.concat(bug.labels) if bug.labels
+        # end
+
+        # result = runs.transform_values do |run|
+        #   %("#{run.dig(0, 'patches', 0, 'PATCH_DIFF_ORIG')}").undump
+        # end
+
+        # puts JSON.pretty_generate result
 
         # pp labels.tally.sort_by { _2 }
         # pp ids.size
@@ -212,7 +244,7 @@ module RunBugRun
         end
       end
 
-      desc 'analyze OUTPUT_FILE', 'analyze evaluation results'
+      desc 'analyze EVAL_OUTPUT', 'analyze evaluation results'
       method_option :by_language, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_change_count, desc: 'Analyze per language', type: :boolean, default: false
       method_option :by_label, desc: 'Analyze per label', type: :boolean, default: false
@@ -226,9 +258,11 @@ module RunBugRun
       method_option :format, desc: 'Output format for plausibility', type: :string, enum: %w[rel abs verbose], default: 'rel'
       method_option :candidate_limit, desc: 'Limit evaluation to specified number of candidates', type: :numeric, default: nil
       method_option :languages, desc: 'Limit evaluation to specified number of candidates', type: :array, default: nil
+      method_option :label_length, desc: 'Label length (depth of hierarchy) to consider when analyzing by label', type: :numeric, default: nil
 
       def analyze(output_filename)
-        analyzer = Analyzer.new(output_filename, options)
+        output = JSONUtils.load_file output_filename, symbolize_names: false
+        analyzer = Analyzer.new(output, options)
         report = analyzer.analyze
 
         json_output = JSON.pretty_generate(report.sort.to_h)
@@ -250,6 +284,10 @@ module RunBugRun
       require 'run_bug_run/cli/utils'
       desc 'utils', 'utility commands'
       subcommand 'utils', CLI::Utils
+
+      require 'run_bug_run/cli/vis'
+      desc 'vis', 'visualization commands'
+      subcommand 'vis', CLI::Vis
     end
   end
 end

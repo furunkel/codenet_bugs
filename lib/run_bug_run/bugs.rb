@@ -54,6 +54,10 @@ module RunBugRun
       @bugs[bug_id.to_i]
     end
 
+    def key?(bug_id)
+      @bugs.key? bug_id.to_i
+    end
+
     def select(...) = self.class.new(@bugs.each_value.select(...), logger: @logger, logger_level: @logger.level)
 
     def take(count)
@@ -64,16 +68,12 @@ module RunBugRun
       @bugs.select { results.any_for_bug?(_1) }
     end
 
-    def select_languages(languages)
-      @bugs.select { |_bug_id, bug| languages.include? bug.language }
-    end
-
     def bug_ids
       @bugs.keys
     end
 
     def evaluate!(tests, candidates: nil, fixed: false, buggy: false, abort_on_timeout: 1, abort_on_fail: 1,
-                  abort_on_error: 1, checkpoint: nil, workers: 8, variant: nil)
+                  abort_on_error: 1, stop_after_first_pass: true, checkpoint: nil, workers: 8, variant: nil)
       if checkpoint
         all_rows = JSONUtils.load_json(checkpoint, compression: :gzip)
         all_rows.transform_keys!(&:to_i)
@@ -89,13 +89,13 @@ module RunBugRun
       end
 
       eval_rows = evaluate_bugs(bugs, tests, candidates, fixed:, buggy:, abort_on_timeout:, abort_on_fail:,
-                                                         abort_on_error:, progress_proc:, workers:, variant:)
+                                                         abort_on_error:, stop_after_first_pass:, progress_proc:, workers:, variant:)
       all_rows.merge! eval_rows
       all_rows
     end
 
     def inspect
-      to_s
+      "#<#{self.class.name} size=#{@bugs.size}>"
     end
 
     private
@@ -115,7 +115,10 @@ module RunBugRun
       timeout: Emojis::STOP_WATCH
     }.tap { _1.default = Emojis::QUESTION_MARK }.freeze
 
-    def evaluate_bugs(bugs, tests, candidates, fixed:, buggy:, workers:, abort_on_timeout: 1, abort_on_fail: 1, abort_on_error: 1,
+    def evaluate_bugs(bugs, tests, candidates,
+                      fixed:, buggy:, workers:,
+                      abort_on_timeout: 1, abort_on_fail: 1, abort_on_error: 1,
+                      stop_after_first_pass: true,
                       progress_proc: nil, variant: nil)
       test_worker_pool = TestWorkerPool.new logger: @logger, size: workers
       eval_rows = {}
@@ -158,7 +161,7 @@ module RunBugRun
                                                                 abort_on_error:,
                                                                 abort_on_fail:)
                     acc << runs
-                    break acc if runs.all? { _1.fetch(:result) == 'pass' }
+                    break acc if stop_after_first_pass && runs.all? { _1.fetch(:result) == 'pass' }
                   end
                 end
               end

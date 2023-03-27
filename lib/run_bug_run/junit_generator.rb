@@ -33,7 +33,7 @@ module RunBugRun
 
     def generate_bug(bug, tests)
       package_name = "run_bug_run_#{bug.id}"
-      template = File.read(File.join(RunBugRun.data_dir, 'templates', 'BugTest.java.erb'))
+      template = File.read(File.join(RunBugRun.gem_data_dir, 'templates', 'java', 'BugTest.java.erb'))
       submission = bug.submission @fixed ? :fixed : :buggy
       test_class_name = "#{submission.main_class}Test"
       erb = ERB.new(template)

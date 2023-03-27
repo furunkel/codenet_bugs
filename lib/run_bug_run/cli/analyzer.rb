@@ -5,11 +5,9 @@ module RunBugRun
     class Analyzer
       attr_reader :options
 
-      def initialize(output_filename, options)
-        @output_filename = output_filename
+      def initialize(output, options)
         @options = options
-
-        load
+        load(output)
       end
 
       def analyze
@@ -38,15 +36,14 @@ module RunBugRun
 
       private
 
-      def load
-        output = JSONUtils.load_file @output_filename, symbolize_names: false
+      def load(output)
         version = output.fetch('version')
-        languages = output.fetch('languages').map(&:to_sym)
+        languages = @options.fetch(:languages) { output.fetch('languages') }.map(&:to_sym)
         split = output.fetch('split').to_sym
 
         dataset = RunBugRun::Dataset.new(version:)
         @bugs = dataset.load_bugs(split:, languages:)
-        @tests = dataset.load_tests
+        @tests = dataset.load_tests unless @options[:only_plausible]
 
         @results = EvaluationResults.new(
           output.fetch('results'),
@@ -55,11 +52,8 @@ module RunBugRun
           candidate_limit: @options.fetch(:candidate_limit, nil)
         )
 
-        if (languages = @options[:languages])
-          @results = @results.filter_languages(languages.map(&:to_sym))
-        end
-
-        @bugs = @bugs.select_bugs_with_results(@results) if options.fetch(:ignore_missing)
+        @results = @results.trim_to_bugs
+        @bugs = @bugs.select_bugs_with_results(@results) if options.fetch(:ignore_missing, false)
       end
 
       def format_rate(plausible, total)
@@ -71,6 +65,8 @@ module RunBugRun
           (plausible / total.to_f).round(4)
         when 'verbose'
           "#{plausible}/#{total} #{(plausible / total.to_f).round(4)}"
+        when 'dict'
+          {total:, plausible:, rate: plausible / total.to_f}
         else
           raise "invalid plausibility rate format #{format}"
         end
@@ -121,11 +117,13 @@ module RunBugRun
       end
 
       def analyze_by_label(report)
-        label_counts = bug_label_counts
-        plausible_label_counts = plausible_label_counts(@results.where_any_plausible_candidate, label_counts)
+        label_length = options[:label_length]
+        label_counts = bug_label_counts(label_length)
+        plausible_label_counts = plausible_label_counts(@results.where_any_plausible_candidate, label_counts, label_length)
 
-        plausible_label_counts.each do |label, count|
-          report[:"plausibility_rate_#{label}"] = format_rate(count, label_counts.fetch(label))
+        label_counts.each do |label, count|
+          plausible_count = plausible_label_counts.fetch(label, 0)
+          report[:"plausibility_rate_#{label}"] = format_rate(plausible_count, count)
         end
       end
 
@@ -160,16 +158,21 @@ module RunBugRun
         report[:no_labels] = scores.assoc('no_label')[1]
       end
 
-      private
+      def label_for_length(label, length)
+        return label if length.nil?
+        label.split('.', length + 1)[...length].join('.')
+      end
 
-      def bug_label_counts
+      def bug_label_counts(label_length)
         label_counts = Hash.new { |h, k| h[k] = 0 }
         @bugs.each do |bug|
           labels = bug&.labels
           if labels.nil? || labels.empty?
             label_counts['no_label'] += 1
           else
-            labels.each { label_counts[_1] += 1 }
+            labels.each do |label|
+              label_counts[label_for_length(label, label_length)] += 1
+            end
           end
         end
 
@@ -178,7 +181,7 @@ module RunBugRun
         label_counts
       end
 
-      def plausible_label_counts(plausible_results, label_counts)
+      def plausible_label_counts(plausible_results, label_counts, label_length)
         plausible_label_counts = Hash.new { |h, k| h[k] = 0 }
 
         plausible_results.each_bug do |bug|
@@ -186,7 +189,9 @@ module RunBugRun
           if labels.nil? || labels.empty?
             plausible_label_counts['no_label'] += 1
           else
-            labels.each { plausible_label_counts[_1] += 1 }
+            labels.each do |label|
+              plausible_label_counts[label_for_length(label, label_length)] += 1
+            end
           end
         end
 

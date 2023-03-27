@@ -15,6 +15,10 @@ module RunBugRun
       @line_hunks = line_hunks
     end
 
+    def inspect
+      "#<#{self.class.name} id=#{@id} language=#{@language} problem_id=#{@problem_id}>"
+    end
+
     def diff(before_name, after_name)
       require 'diffy'
 

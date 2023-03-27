@@ -3,6 +3,8 @@ module RunBugRun
     attr_reader :bugs, :tests, :only_plausible
 
     def initialize(results_hash, bugs, tests, only_plausible: false, candidate_limit: nil)
+      raise ArgumentError, "expect hash as first argument" unless results_hash.is_a?(Hash)
+
       @only_plausible = only_plausible
       @candidate_limit = candidate_limit
       @results_hash = results_hash
@@ -16,6 +18,15 @@ module RunBugRun
 
     def size = @results_hash.size
 
+    def candidates_per_bug
+      _, first_candidate_runs = @results_hash.first
+      first_candidate_runs.size
+    end
+
+    def to_hash
+      @results_hash
+    end
+
     def empty?
       @results_hash.empty?
     end
@@ -28,11 +39,16 @@ module RunBugRun
       "#<#{self.class.name} size=#{@results_hash.size}>"
     end
 
+    def trim_to_bugs
+      results_hash = @results_hash.select { |bug_id, _| @bugs.key? bug_id }.to_h
+      self.class.new(results_hash, @bugs, @tests, only_plausible:)
+    end
+
     def filter_languages(languages)
       results_hash = @results_hash.select do |bug_id, _candidate_runs|
         bug = @bugs[bug_id]
         languages.include?(bug.language)
-      end
+      end.to_h
       self.class.new(results_hash, @bugs, @tests, only_plausible:)
     end
 
@@ -120,13 +136,13 @@ module RunBugRun
 
     def wrap_values(groups_hash)
       groups_hash.transform_values do |group_results_hash|
-        self.class.new(group_results_hash, @bugs, @tests, only_plausible:)
+        self.class.new(group_results_hash.to_h, @bugs, @tests, only_plausible:)
       end
     end
 
     def wrap_values!(groups_hash)
       groups_hash.transform_values! do |group_results_hash|
-        self.class.new(group_results_hash, @bugs, @tests, only_plausible:)
+        self.class.new(group_results_hash.to_h, @bugs, @tests, only_plausible:)
       end
     end
 

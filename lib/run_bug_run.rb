@@ -16,6 +16,10 @@ module RunBugRun
     File.join(user_data_dir, 'run_bug_run')
   end
 
+  def self.gem_data_dir
+    File.join(root, 'data')
+  end
+
   def self.logger
     @logger ||= ::Logger.new($stderr)
   end
