@@ -1,0 +1,76 @@
+<html>
+  <head>
+  </head>
+  <style>
+      td { 
+        padding: 1em; 
+        border-radius: 0.2em;
+        transition: opacity 500ms;
+      }
+      <% @backgrounds.each do |result, background| %>
+        td.<%= result %>{ <%= background %> }
+      <% end %>
+
+      tr.hidden {
+        opacity: 0.3;
+      }
+
+      div.cols {
+        display: flex;
+        gap: 1em;
+        overflow: scroll;
+      }
+
+      div.col.hidden {
+        width: 0px;
+        transition: width 700ms;
+        display: none;
+      }
+  </style>
+  <link rel="stylesheet" href="pico.classless.css">
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      let checkboxes = document.querySelectorAll("input.label-input")
+      checkboxes.forEach((checkbox) => {
+        checkbox.addEventListener("change", () => {
+          let rows = document.querySelectorAll(`tr[data-labels*="|${checkbox.id}|"]`)
+          rows.forEach((row) => {
+            checkbox.checked ? row.classList.remove("hidden") : row.classList.add("hidden")
+          })
+
+          let cols = document.querySelectorAll(`.col[data-labels*="|${checkbox.id}|"]`)
+          cols.forEach((col) => {
+            checkbox.checked ? col.classList.remove("hidden") : col.classList.add("hidden")
+          })
+        })
+      })
+    })
+
+  </script>
+  <body>
+    <div class="labels">
+      <% all_labels = Set.new %>
+      <% language_labels.each_value { all_labels.merge _1 } %>
+      <% all_labels.each do |label| %>
+        <input class="label-input" type="checkbox" id="<%= label%>" />
+        <label for="<%= label %>"><%= label %></label>
+      <% end %>
+    </div>
+    <div class="cols">
+      <% language_data.each do |problem_id, bug_ids| %>
+        <div class="col hidden" data-labels="|<%= language_labels_per_problem[problem_id].join('|') %>|">
+          <span><%= problem_id %></span>
+          <table>
+            <% bug_ids.each do |bug_id, candidate_results| %>
+              <tr class="hidden" data-labels="|<%= language_labels[bug_id].join('|') %>|">
+              <% candidate_results.each_with_index do |candidate_result| %>
+                <td class="<%= candidate_result %>" title="<%= candidate_result %>"></td>
+              <% end %>
+              </tr>
+            <% end %>
+          </table>
+        </div>
+      <% end %>
+    </div>
+  </body>
+</html>

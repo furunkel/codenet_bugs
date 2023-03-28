@@ -1,5 +1,6 @@
 require 'erb'
 require 'set'
+require 'fileutils'
 
 module RunBugRun
   module CLI
@@ -76,16 +77,20 @@ module RunBugRun
           end
         end
 
+        output_dir = '/tmp'
         data.each do |language, language_data|
           language_labels = labels[language]
           language_labels_per_problem = labels_per_problem[language]
           html = ERB.new(template).result(binding)
-          filename = "/tmp/#{language}.html.gz"
+          filename = File.join(output_dir, "#{language}.html.gz")
           puts "Writing #{filename}"
           Zlib::GzipWriter.open(filename) do |gz|
             gz.write html
           end
         end
+
+        css_filename = File.join(RunBugRun.gem_data_dir, 'templates', 'vis', 'pico.classless.css')
+        FileUtils.cp css_filename, output_dir
         # File.write('/tmp/test.html', html.string)
       end
     end
