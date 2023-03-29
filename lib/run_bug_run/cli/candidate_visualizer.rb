@@ -38,7 +38,7 @@ module RunBugRun
         @backgrounds = COLORS.transform_values { "background-color: #{_1};" }
         (2...COLORS.size).each do |n|
           COLORS.keys.combination(n).each do |c|
-            @backgrounds[c.join('_')] = striped_background(COLORS.values_at(*c))
+            @backgrounds[c.join('__')] = striped_background(COLORS.values_at(*c))
           end
         end
       end
@@ -54,7 +54,39 @@ module RunBugRun
           gradients << "#{color} #{(index * f) + 50}%"
           gradients << "#{color} #{((index + 1) * f) + 50}%"
         end
-        "background-image: linear-gradient(45deg, #{gradients.join(', ')});"
+        "background-image: linear-gradient(90deg, #{gradients.join(', ')});"
+      end
+
+      def labels_tree(labels)
+        tree = Hash.new { |h,k| h[k] = Hash.new(&h.default_proc) }
+        labels.each do |label|
+          parts = label.split('.')
+          h = parts.take(parts.size - 1).inject(tree) do |acc, part|
+            acc[part]
+          end
+          h[parts.last] = label
+        end
+        tree
+      end
+
+      def html_label_tree(tree, buffer = StringIO.new, prefix = [])
+        tree.each do |name, t|
+          new_prefix = prefix.dup << name
+          full_label = new_prefix.join('.')
+          bottom = !t.is_a?(Hash)
+          class_name = bottom ? 'label-input' : 'label-level-input'
+          buffer << "<div>"
+          buffer << %(<input class="#{class_name}" type="checkbox" id="#{full_label}" />\n)
+          buffer << %(<label for="#{full_label}">#{name}</label>\n)
+          buffer << "</div>"
+          if !bottom
+            buffer << %(<div class="label-level">\n)
+            html_label_tree(t, buffer, new_prefix)
+            buffer << "</div>\n"
+          end
+        end
+        puts buffer.string
+        buffer.string
       end
 
       def render!
@@ -73,20 +105,29 @@ module RunBugRun
             results = candidate_results.map { _1.fetch('result') }
             results.uniq!
             results.sort!
-            results.join('_')
+            results.join('__')
           end
         end
 
+
+        language_names = RunBugRun::Bugs::LANGUAGE_NAME_MAP
         output_dir = '/tmp'
         data.each do |language, language_data|
           language_labels = labels[language]
+          all_labels = Set.new
+          language_labels.each_value { all_labels.merge _1 }
+          html_tree = html_label_tree(labels_tree(all_labels))
           language_labels_per_problem = labels_per_problem[language]
           html = ERB.new(template).result(binding)
-          filename = File.join(output_dir, "#{language}.html.gz")
+
+          filename = File.join(output_dir, "#{language}.html")
           puts "Writing #{filename}"
-          Zlib::GzipWriter.open(filename) do |gz|
-            gz.write html
-          end
+          File.write(filename, html)
+
+          # filename = File.join(output_dir, "#{language}.html.gz")
+          # Zlib::GzipWriter.open(filename) do |gz|
+          #   gz.write html
+          # end
         end
 
         css_filename = File.join(RunBugRun.gem_data_dir, 'templates', 'vis', 'pico.classless.css')
