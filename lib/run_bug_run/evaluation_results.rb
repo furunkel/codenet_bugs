@@ -1,6 +1,6 @@
 module RunBugRun
   class EvaluationResults
-    attr_reader :bugs, :tests, :only_plausible
+    attr_reader :bugs, :tests, :only_plausible, :candidate_limit
 
     def initialize(results_hash, bugs, tests, only_plausible: false, candidate_limit: nil)
       raise ArgumentError, "expect hash as first argument" unless results_hash.is_a?(Hash)
@@ -13,7 +13,7 @@ module RunBugRun
     end
 
     def dup
-      self.class.new(@results_hash.dup, @bugs, @tests, only_plausible:)
+      self.class.new(@results_hash.dup, @bugs, @tests, only_plausible:, candidate_limit:)
     end
 
     def size = @results_hash.size
@@ -41,7 +41,7 @@ module RunBugRun
 
     def trim_to_bugs
       results_hash = @results_hash.select { |bug_id, _| @bugs.key? bug_id }.to_h
-      self.class.new(results_hash, @bugs, @tests, only_plausible:)
+      self.class.new(results_hash, @bugs, @tests, only_plausible:, candidate_limit:)
     end
 
     def filter_languages(languages)
@@ -49,7 +49,7 @@ module RunBugRun
         bug = @bugs[bug_id]
         languages.include?(bug.language)
       end.to_h
-      self.class.new(results_hash, @bugs, @tests, only_plausible:)
+      self.class.new(results_hash, @bugs, @tests, only_plausible:, candidate_limit:)
     end
 
     def group_by_exception
@@ -113,7 +113,7 @@ module RunBugRun
           plausible_candidate?(bug_id, candidate_results)
         end
 
-        self.class.new(filtered_results_hash, @bugs, @tests, only_plausible: false)
+        self.class.new(filtered_results_hash, @bugs, @tests, only_plausible: false, candidate_limit:)
       end
     end
 
@@ -136,13 +136,13 @@ module RunBugRun
 
     def wrap_values(groups_hash)
       groups_hash.transform_values do |group_results_hash|
-        self.class.new(group_results_hash.to_h, @bugs, @tests, only_plausible:)
+        self.class.new(group_results_hash.to_h, @bugs, @tests, only_plausible:, candidate_limit:)
       end
     end
 
     def wrap_values!(groups_hash)
       groups_hash.transform_values! do |group_results_hash|
-        self.class.new(group_results_hash.to_h, @bugs, @tests, only_plausible:)
+        self.class.new(group_results_hash.to_h, @bugs, @tests, only_plausible:, candidate_limit:)
       end
     end
 
