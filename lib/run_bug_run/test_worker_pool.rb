@@ -8,7 +8,6 @@ require 'run_bug_run/test'
 require 'run_bug_run/test_worker'
 
 module RunBugRun
-
   class TestWorkerPool
     SANDBOX_HOME = '/home/sandbox'.freeze
 
@@ -42,6 +41,7 @@ module RunBugRun
           recv_header = @read_io.read(TestWorker::HEADER.bytesize)
           @logger.debug("Reading '#{recv_header}'")
           raise "expected header but got #{recv_header}" if recv_header != TestWorker::HEADER
+
           size = @read_io.read(8).unpack1('q')
           @logger.debug("Reading '#{size}'")
           result = @read_io.read(size)
@@ -74,8 +74,6 @@ module RunBugRun
         @queue.enq connection
         connection
       end
-
-      # @write_ios = @queue.map { _1.write_io }
     end
 
     def submit(submission, io_samples, **options)
@@ -84,28 +82,7 @@ module RunBugRun
       result = JSON.parse(result_str, symbolize_names: true)
       @queue.enq connection
       [result, { worker_id: connection.id }]
-      # loop do
-      #   _, writable_ios, = IO.select(nil, @write_ios, nil)
-
-      #   p @write_ios
-      #   #writable_io = writable_ios.first #sampl
-
-      #   connection = find_idle_connection(writable_ios)
-      #   if connection.nil?
-      #     @logger.debug("no idle connection found...")
-      #   else
-      #     @logger.debug("submitting to worker #{connection.id}")
-      #     result_str = connection.submit(JSON.generate([submission.to_h, io_samples.map(&:to_h), options.to_h]))
-      #     result = JSON.parse(result_str)
-      #     @logger.debug("submission to #{connection.id} returned")
-      #     return result
-      #   end
-      # end
     end
-
-
-
-
 
     def shutdown
       @connections.each(&:shutdown)
@@ -129,10 +106,6 @@ module RunBugRun
       ruby_path = RbConfig::CONFIG.values_at('bindir', 'libexecdir').join(':')
       ruby_prefix = RbConfig::CONFIG['prefix']
       rubylib = ($LOAD_PATH + [File.join(RunBugRun.root, 'lib')]).map { to_sandbox_path(_1) }.join(':')
-
-      # p ruby_path
-      # p [ruby_prefix, to_sandbox_path(ruby_prefix)]
-      # p [rubylib]
 
       cmd = [
         'bwrap',
@@ -158,7 +131,9 @@ module RunBugRun
         '--setenv', 'LD_LIBRARY_PATH', to_sandbox_path(RbConfig::CONFIG['libdir']),
         '--setenv', 'PATH', "#{ruby_path}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       ]
-      spawn(*cmd, File.join(to_sandbox_path(ruby_bindir), 'ruby'), '-e', run_worker_code(id), 3=>child_read, 4=>child_write, close_others: true)
+      ruby_path = File.join(to_sandbox_path(ruby_bindir), 'ruby')
+      spawn(*cmd, ruby_path, '-e', run_worker_code(id), 3 => child_read,
+                                                        4 => child_write, close_others: true)
     end
   end
 end

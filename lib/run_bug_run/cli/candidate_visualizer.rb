@@ -123,16 +123,10 @@ module RunBugRun
           filename = File.join(output_dir, "#{language}.html")
           puts "Writing #{filename}"
           File.write(filename, html)
-
-          # filename = File.join(output_dir, "#{language}.html.gz")
-          # Zlib::GzipWriter.open(filename) do |gz|
-          #   gz.write html
-          # end
         end
 
         css_filename = File.join(RunBugRun.gem_data_dir, 'templates', 'vis', 'pico.classless.css')
         FileUtils.cp css_filename, output_dir
-        # File.write('/tmp/test.html', html.string)
       end
     end
   end
